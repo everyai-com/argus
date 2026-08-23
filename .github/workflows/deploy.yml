@@ -25,12 +25,12 @@ jobs:
       ARGUS_E2E_TARGET: ${{ vars.ARGUS_E2E_TARGET }}
       ARGUS_E2E_TOKEN: ${{ secrets.ARGUS_E2E_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.3.0
           run_install: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
