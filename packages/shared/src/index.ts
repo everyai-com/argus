@@ -197,6 +197,34 @@ export const CapacityStatsSchema = z.object({
 export type CapacityStats = z.infer<typeof CapacityStatsSchema>;
 
 // ---------------------------------------------------------------------------
+// Platform projects — committed configuration consumed by the GitHub App.
+// This deliberately contains no credentials: auth profiles and provider
+// secrets remain tenant-scoped in Argus/Cloudflare, never in the repository.
+// ---------------------------------------------------------------------------
+
+export const PlatformCheckSchema = z.enum(["smoke", "audit", "flows"]);
+export type PlatformCheck = z.infer<typeof PlatformCheckSchema>;
+
+export const GitHubPlatformConfigSchema = z
+  .object({
+    targetUrl: z.string().url(),
+    project: z.string().max(60).optional(),
+    checks: z
+      .array(PlatformCheckSchema)
+      .min(1)
+      .default(["smoke", "audit", "flows"]),
+    viewports: z.array(ViewportNameSchema).min(1).default(["mobile", "desktop"]),
+    colorSchemes: z
+      .array(z.enum(["light", "dark"]))
+      .min(1)
+      .default(["light"]),
+    flowConcurrency: z.number().int().min(1).max(8).default(3),
+    authProfile: AuthProfileNameSchema.optional(),
+  })
+  .strict();
+export type GitHubPlatformConfig = z.infer<typeof GitHubPlatformConfigSchema>;
+
+// ---------------------------------------------------------------------------
 // Query — find elements, get stable refs
 // ---------------------------------------------------------------------------
 

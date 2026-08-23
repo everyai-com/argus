@@ -12,7 +12,7 @@ function env(overrides: Record<string, unknown> = {}) {
       idFromName: (id: string) => id,
       get: () => ({ fetch: vi.fn() }),
     },
-    ARTIFACTS: { get: vi.fn(), list: vi.fn() },
+    ARTIFACTS: { get: vi.fn(), put: vi.fn(), list: vi.fn() },
     ...overrides,
   } as never;
 }
@@ -25,6 +25,49 @@ describe("worker API boundary", () => {
       (await app.request("https://argus.test/v1/sessions", {}, env({ ARGUS_TOKEN: undefined })))
         .status
     ).toBe(401);
+  });
+
+  it("reports GitHub platform readiness without exposing credentials", async () => {
+    const response = await app.request(
+      "https://argus.test/platform/github/status",
+      {},
+      env({
+        ARGUS_GITHUB_APP_ID: "123",
+        ARGUS_GITHUB_PRIVATE_KEY: "secret-key",
+        ARGUS_GITHUB_WEBHOOK_SECRET: "webhook-secret",
+        ARGUS_GITHUB_APP_SLUG: "argus-verification",
+      })
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      configured: true,
+      installUrl: "https://github.com/apps/argus-verification/installations/new",
+      checkName: "Argus Verification",
+    });
+  });
+
+  it("rejects unsigned GitHub webhook traffic before storing a delivery", async () => {
+    const artifactPut = vi.fn();
+    const response = await app.request(
+      "https://argus.test/platform/github/webhook",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-github-delivery": "12345678-abcd",
+          "x-github-event": "pull_request",
+        },
+        body: JSON.stringify({ action: "opened" }),
+      },
+      env({
+        ARGUS_GITHUB_APP_ID: "123",
+        ARGUS_GITHUB_PRIVATE_KEY: "secret-key",
+        ARGUS_GITHUB_WEBHOOK_SECRET: "webhook-secret",
+        ARTIFACTS: { get: vi.fn(), put: artifactPut, list: vi.fn() },
+      })
+    );
+    expect(response.status).toBe(401);
+    expect(artifactPut).not.toHaveBeenCalled();
   });
 
   it("validates input before allocating a browser", async () => {

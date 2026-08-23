@@ -53,6 +53,55 @@ function ArtifactImg({ token, src, alt }: { token: string; src: string; alt: str
   return <img src={url} alt={alt} />;
 }
 
+function GitHubView(): React.ReactElement {
+  const [status, setStatus] = useState<{ configured: boolean; installUrl?: string; checkName: string }>();
+  const [error, setError] = useState<string>();
+  useEffect(() => {
+    fetch("/platform/github/status")
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`GitHub platform status: ${response.status}`);
+        return response.json();
+      })
+      .then(setStatus)
+      .catch((reason) => setError(String(reason)));
+  }, []);
+  if (error) return <div className="empty">{error}</div>;
+  if (!status) return <div className="empty">checking GitHub App…</div>;
+  return (
+    <div>
+      <div className="card platform-hero">
+        <span className={`badge ${status.configured ? "pass" : "major"}`}>
+          {status.configured ? "ready" : "setup required"}
+        </span>
+        <h2>Automatic verification for every pull request</h2>
+        <p className="muted">
+          Install Argus on selected repositories. Each PR receives one rich GitHub Check with cloud-browser
+          smoke tests, accessibility and performance audits, visual diffs, and committed flow replays.
+        </p>
+        {status.installUrl ? (
+          <a className="primary" href={status.installUrl}>
+            Connect GitHub
+          </a>
+        ) : (
+          <p className="muted small">Set the GitHub App slug to enable repository installation.</p>
+        )}
+      </div>
+      <div className="card">
+        <strong>Repository configuration</strong>
+        <p className="muted small">
+          Commit <code className="k">.argus/platform.json</code>. Credentials never belong in this file.
+        </p>
+        <pre className="config-example">{`{
+  "targetUrl": "https://preview.example.com",
+  "checks": ["smoke", "audit", "flows"],
+  "viewports": ["mobile", "desktop"],
+  "flowConcurrency": 3
+}`}</pre>
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 
 interface RunRow {
@@ -413,11 +462,13 @@ function RunDetail({ token, runId, onBack }: { token: string; runId: string; onB
 
 export function App(): React.ReactElement {
   const [token, setToken] = useToken();
-  const [tab, setTab] = useState<"fleet" | "runs" | "sessions" | "capacity">("fleet");
+  const [tab, setTab] = useState<"fleet" | "runs" | "sessions" | "capacity" | "github">("fleet");
   const [runs, setRuns] = useState<RunRow[]>([]);
   const [sessions, setSessions] = useState<any[]>([]);
   const [fleet, setFleet] = useState<any[]>([]);
-  const [selected, setSelected] = useState<string>();
+  const [selected, setSelected] = useState<string | undefined>(
+    () => new URLSearchParams(location.search).get("run") ?? undefined
+  );
   const [error, setError] = useState<string>();
 
   const refresh = useCallback(() => {
@@ -443,6 +494,7 @@ export function App(): React.ReactElement {
   }, [refresh]);
 
   const body = useMemo(() => {
+    if (tab === "github") return <GitHubView />;
     if (!token)
       return (
         <div className="empty">
@@ -548,6 +600,9 @@ export function App(): React.ReactElement {
           </button>
           <button className={tab === "capacity" && !selected ? "active" : ""} onClick={() => { setTab("capacity"); setSelected(undefined); }}>
             Capacity
+          </button>
+          <button className={tab === "github" && !selected ? "active" : ""} onClick={() => { setTab("github"); setSelected(undefined); }}>
+            GitHub
           </button>
         </nav>
         <span className="spacer" />

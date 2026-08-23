@@ -69,6 +69,16 @@ button.mini:hover { border-color: var(--accent); }
 .empty { text-align: center; color: var(--muted); padding: 60px 0; }
 a.back { color: var(--accent); cursor: pointer; text-decoration: none; }
 code.k { background: var(--panel2); border-radius: 4px; padding: 1px 6px; }
+.platform-hero { padding: 24px; }
+.platform-hero h2 { margin: 10px 0 4px; font-size: 24px; }
+a.primary {
+  display: inline-block; margin-top: 8px; padding: 9px 15px; border-radius: 8px;
+  background: var(--accent); color: #08101f; text-decoration: none; font-weight: 800;
+}
+.config-example {
+  margin: 12px 0 0; padding: 14px; overflow-x: auto; border-radius: 8px;
+  background: var(--panel2); color: var(--text); font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
 
 /* capacity gauges */
 .gauge { margin: 10px 0; }

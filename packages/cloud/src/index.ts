@@ -27,6 +27,7 @@ import { fleetView, listRuns, writeRunMeta } from "./runs";
 import { runSmoke } from "./smoke";
 import { runAudit } from "./audit";
 import { replayFlow, verifyFlows } from "./flows";
+import { handleGitHubEvent, verifyGitHubWebhook } from "./github-app";
 
 const ADMIN_TENANT = "_admin";
 
@@ -120,6 +121,69 @@ function requireAdmin(c: { get: (k: "tenant") => ResolvedTenant; json: (b: unkno
 }
 
 app.get("/health", (c) => c.json({ ok: true, service: "argus-cloud" }));
+
+// --- GitHub platform -------------------------------------------------------
+// This surface is intentionally outside /v1: it authenticates with GitHub's
+// webhook HMAC rather than an Argus bearer token. The handler acknowledges
+// quickly and performs the browser run in waitUntil.
+
+app.get("/platform/github/status", (c) => {
+  const configured = Boolean(
+    c.env.ARGUS_GITHUB_APP_ID &&
+      c.env.ARGUS_GITHUB_PRIVATE_KEY &&
+      c.env.ARGUS_GITHUB_WEBHOOK_SECRET
+  );
+  return c.json({
+    configured,
+    installUrl: c.env.ARGUS_GITHUB_APP_SLUG
+      ? `https://github.com/apps/${c.env.ARGUS_GITHUB_APP_SLUG}/installations/new`
+      : undefined,
+    checkName: "Argus Verification",
+  });
+});
+
+app.post("/platform/github/webhook", async (c) => {
+  const secret = c.env.ARGUS_GITHUB_WEBHOOK_SECRET;
+  if (!secret || !c.env.ARGUS_GITHUB_APP_ID || !c.env.ARGUS_GITHUB_PRIVATE_KEY) {
+    return c.json({ error: "github_app_not_configured" }, 503);
+  }
+  const rawBody = await c.req.text();
+  const signature = c.req.header("x-hub-signature-256") ?? "";
+  if (!(await verifyGitHubWebhook(rawBody, secret, signature))) {
+    return c.json({ error: "invalid_signature" }, 401);
+  }
+  const event = c.req.header("x-github-event") ?? "";
+  const delivery = c.req.header("x-github-delivery") ?? "";
+  if (!/^[a-zA-Z0-9-]{8,80}$/.test(delivery)) {
+    return c.json({ error: "invalid_delivery" }, 400);
+  }
+  const deliveryKey = `platform/github/deliveries/${delivery}.json`;
+  if (await c.env.ARTIFACTS.get(deliveryKey)) {
+    return c.json({ accepted: true, duplicate: true });
+  }
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(rawBody) as Record<string, unknown>;
+  } catch {
+    return c.json({ error: "invalid_json" }, 400);
+  }
+  await c.env.ARTIFACTS.put(
+    deliveryKey,
+    JSON.stringify({ event, receivedAt: new Date().toISOString() }),
+    { httpMetadata: { contentType: "application/json" } }
+  );
+  const publicUrl = (c.env.ARGUS_PUBLIC_URL ?? new URL(c.req.url).origin).replace(/\/$/, "");
+  c.executionCtx.waitUntil(
+    handleGitHubEvent(c.env, event, payload, publicUrl).catch(async (error) => {
+      await c.env.ARTIFACTS.put(
+        `platform/github/errors/${delivery}.json`,
+        JSON.stringify({ event, at: new Date().toISOString(), error: String(error).slice(0, 1_000) }),
+        { httpMetadata: { contentType: "application/json" } }
+      );
+    })
+  );
+  return c.json({ accepted: true }, 202);
+});
 
 // --- sessions ---------------------------------------------------------------
 
