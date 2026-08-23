@@ -28,6 +28,7 @@ import { runSmoke } from "./smoke";
 import { runAudit } from "./audit";
 import { replayFlow, verifyFlows } from "./flows";
 import { handleGitHubEvent, verifyGitHubWebhook } from "./github-app";
+import { renderEvidencePage, serveEvidenceArtifact, verifyEvidenceSignature } from "./evidence";
 
 const ADMIN_TENANT = "_admin";
 
@@ -140,6 +141,45 @@ app.get("/platform/github/status", (c) => {
       : undefined,
     checkName: "Argus Verification",
   });
+});
+
+app.get("/platform/evidence/:tenant/:run", async (c) => {
+  const secret = c.env.ARGUS_GITHUB_WEBHOOK_SECRET;
+  const tenantId = c.req.param("tenant");
+  const runId = c.req.param("run");
+  if (!secret || !/^[a-z0-9][a-z0-9_-]{0,39}$/.test(tenantId) || !/^[a-zA-Z0-9-]{1,80}$/.test(runId)) {
+    return c.text("Not found", 404);
+  }
+  const expires = c.req.query("expires");
+  const allowed = await verifyEvidenceSignature(
+    secret,
+    `run:${tenantId}:${runId}`,
+    expires,
+    c.req.query("sig")
+  );
+  if (!allowed) return c.text("This evidence link is invalid or expired", 403);
+  return renderEvidencePage(
+    c.env,
+    secret,
+    new URL(c.req.url).origin,
+    tenantId,
+    runId,
+    Number(expires)
+  );
+});
+
+app.get("/platform/evidence-artifact/*", async (c) => {
+  const secret = c.env.ARGUS_GITHUB_WEBHOOK_SECRET;
+  const key = c.req.path.replace("/platform/evidence-artifact/", "");
+  if (!secret || !key.startsWith("tenants/") || key.includes("..")) return c.text("Not found", 404);
+  const allowed = await verifyEvidenceSignature(
+    secret,
+    `artifact:${key}`,
+    c.req.query("expires"),
+    c.req.query("sig")
+  );
+  if (!allowed) return c.text("This evidence link is invalid or expired", 403);
+  return serveEvidenceArtifact(c.env, key);
 });
 
 app.post("/platform/github/webhook", async (c) => {

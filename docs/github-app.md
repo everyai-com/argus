@@ -20,6 +20,23 @@ Commit `.argus/platform.json`:
 }
 ```
 
+For automatic preview URLs from Cloudflare Pages, Vercel, Netlify, or a
+GitHub Actions environment, use deployment discovery instead:
+
+```json
+{
+  "deployment": {
+    "environments": ["Preview"]
+  },
+  "checks": ["smoke", "audit", "flows"],
+  "viewports": ["mobile", "desktop"]
+}
+```
+
+An empty `environments` list accepts any successful deployment with an HTTPS
+`environment_url`. A non-empty list is an exact allowlist and prevents a
+production deployment from accidentally triggering a preview policy.
+
 Only the target and check policy belong in this file. Do not put credentials,
 API tokens, passwords, or cookies in the repository. Authenticated checks use a
 tenant-scoped `authProfile` saved in Argus.
@@ -39,9 +56,11 @@ Create a GitHub App with:
   - Contents: read
   - Metadata: read
   - Pull requests: read
+  - Deployments: read
 - Events:
   - Pull request
   - Check run
+  - Deployment status
 
 No user OAuth authorization is required for the first version. Installation
 access is restricted to the repositories selected by the owner.
@@ -67,16 +86,17 @@ token for the repository that triggered the signed webhook.
 2. Deduplicate the `X-GitHub-Delivery` identifier.
 3. Mint a short-lived installation access token.
 4. Read configuration and flows at the pull request head SHA.
-5. Run the selected suites using a per-installation Argus tenant.
-6. Complete the GitHub Check with a verdict, findings, dashboard link, and a
+5. For deployment-driven projects, wait for a successful HTTPS
+   `environment_url` from an allowed environment.
+6. Run the selected suites using a per-installation Argus tenant. The same
+   SHA and target URL are idempotent, so provider retries do not duplicate work.
+7. Complete the GitHub Check with a verdict, findings, a 24-hour signed evidence
+   page, and a
    **Rerun** action.
 
 The webhook returns `202` before browser work finishes. Errors are recorded
 without credentials under `platform/github/errors/` for operational triage.
 
-## Next platform increment
-
-Static `targetUrl` is the first end-to-end contract. The next increment listens
-for successful GitHub `deployment_status` events and uses their
-`environment_url`, allowing Vercel, Cloudflare Pages, Netlify, and custom
-preview deployments to be tested without changing repository configuration.
+Signed evidence URLs never contain an Argus bearer token. They are bound to one
+tenant/run pair, expire after 24 hours, use `no-store`/`noindex`, and generate
+separately signed screenshot URLs.

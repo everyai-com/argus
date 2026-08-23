@@ -159,6 +159,11 @@ export class Coordinator extends DurableObject<Env> {
     if (path === "/tenant-list") return json({ tenants: await this.tenantUsage() });
     if (path === "/tenant-update") return await this.tenantUpdate(body);
     if (path === "/tenant-delete") return await this.tenantDelete(body);
+    // Platform job idempotency. A single DO serializes competing provider
+    // webhooks so duplicate deployment_status deliveries cannot launch two
+    // expensive browser suites for the same SHA/target.
+    if (path === "/platform-run-claim") return await this.platformRunClaim(body);
+    if (path === "/platform-run-complete") return await this.platformRunComplete(body);
 
     return json({ error: "unknown coordinator command" }, 404);
   }
@@ -329,6 +334,36 @@ export class Coordinator extends DurableObject<Env> {
   // -------------------------------------------------------------------------
   // Tenant registry
   // -------------------------------------------------------------------------
+
+  private async platformRunClaim(body: Record<string, unknown>): Promise<Response> {
+    const { key, force } = body as { key?: string; force?: boolean };
+    if (!key || key.length > 300) return json({ claimed: false, error: "invalid key" }, 400);
+    let claimed = false;
+    await this.ctx.blockConcurrencyWhile(async () => {
+      const storageKey = `platform-run:${key}`;
+      const existing = await this.ctx.storage.get<{ expiresAt: number }>(storageKey);
+      if (!force && existing && existing.expiresAt > Date.now()) return;
+      await this.ctx.storage.put(storageKey, {
+        status: "running",
+        startedAt: new Date().toISOString(),
+        expiresAt: Date.now() + 15 * 60_000,
+      });
+      claimed = true;
+    });
+    return json({ claimed });
+  }
+
+  private async platformRunComplete(body: Record<string, unknown>): Promise<Response> {
+    const { key, conclusion } = body as { key?: string; conclusion?: string };
+    if (!key || key.length > 300) return json({ ok: false, error: "invalid key" }, 400);
+    await this.ctx.storage.put(`platform-run:${key}`, {
+      status: "completed",
+      conclusion: String(conclusion ?? "unknown").slice(0, 40),
+      completedAt: new Date().toISOString(),
+      expiresAt: Date.now() + 7 * 24 * 60 * 60_000,
+    });
+    return json({ ok: true });
+  }
 
   private async resolveToken(body: Record<string, unknown>): Promise<Response> {
     const { hash } = body as { hash: string };

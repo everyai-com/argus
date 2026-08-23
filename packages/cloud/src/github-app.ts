@@ -11,6 +11,7 @@ import { runAudit } from "./audit";
 import { verifyFlows } from "./flows";
 import { writeRunMeta } from "./runs";
 import { runSmoke } from "./smoke";
+import { signedEvidenceUrl } from "./evidence";
 
 const GITHUB_API = "https://api.github.com";
 const CHECK_NAME = "Argus Verification";
@@ -64,6 +65,11 @@ export interface PlatformRunResult {
   title: string;
   summary: string;
   detailsUrl: string;
+}
+
+interface VerificationOptions {
+  targetUrl?: string;
+  force?: boolean;
 }
 
 function bytesToBase64Url(bytes: Uint8Array): string {
@@ -261,6 +267,57 @@ async function loadGitHubFlows(token: string, ref: GitHubRepositoryRef): Promise
   return flows;
 }
 
+function targetKey(ref: GitHubRepositoryRef): string {
+  return `platform/github/targets/${ref.installationId}/${ref.owner}/${ref.repo}/${ref.sha}.json`;
+}
+
+async function saveDeploymentTarget(
+  env: Env,
+  ref: GitHubRepositoryRef,
+  targetUrl: string,
+  environment?: string
+): Promise<void> {
+  await env.ARTIFACTS.put(
+    targetKey(ref),
+    JSON.stringify({ targetUrl, environment, savedAt: new Date().toISOString() }),
+    { httpMetadata: { contentType: "application/json" } }
+  );
+}
+
+async function loadDeploymentTarget(env: Env, ref: GitHubRepositoryRef): Promise<string | undefined> {
+  const object = await env.ARTIFACTS.get(targetKey(ref));
+  if (!object) return undefined;
+  const value = (await object.json()) as { targetUrl?: string };
+  return value.targetUrl;
+}
+
+async function runKey(ref: GitHubRepositoryRef, targetUrl: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(targetUrl));
+  const targetHash = [...new Uint8Array(digest)]
+    .slice(0, 8)
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+  return `platform/github/runs/${ref.installationId}/${ref.owner}/${ref.repo}/${ref.sha}/${targetHash}.json`;
+}
+
+async function claimPlatformRun(env: Env, key: string, force = false): Promise<boolean> {
+  const coordinator = env.COORDINATOR.get(env.COORDINATOR.idFromName("main"));
+  const response = await coordinator.fetch("https://do/platform-run-claim", {
+    method: "POST",
+    body: JSON.stringify({ key, force }),
+  });
+  if (!response.ok) throw new Error(`platform run claim failed (${response.status})`);
+  return (await response.json<{ claimed: boolean }>()).claimed;
+}
+
+async function completePlatformRun(env: Env, key: string, conclusion: string): Promise<void> {
+  const coordinator = env.COORDINATOR.get(env.COORDINATOR.idFromName("main"));
+  await coordinator.fetch("https://do/platform-run-complete", {
+    method: "POST",
+    body: JSON.stringify({ key, conclusion }),
+  });
+}
+
 async function ensurePlatformTenant(env: Env, ref: GitHubRepositoryRef): Promise<string> {
   const tenantId = `gh-${ref.installationId}`.slice(0, 40);
   // The registry still expects a token hash, but GitHub installations are
@@ -301,12 +358,14 @@ async function runFlowSuite(
   if (flows.length === 0) {
     return { name: "Flows", status: "skipped", summary: "No committed .argus/flows/*.json files" };
   }
-  const verdict = await verifyFlows(env, flows, config.flowConcurrency, config.targetUrl, tenantId);
+  const targetUrl = config.targetUrl;
+  if (!targetUrl) throw new Error("flow suite target URL was not resolved");
+  const verdict = await verifyFlows(env, flows, config.flowConcurrency, targetUrl, tenantId);
   const runId = crypto.randomUUID().slice(0, 8);
   const at = new Date().toISOString();
   await env.ARTIFACTS.put(
     `tenants/${tenantId}/runs/${runId}/flows-verdict.json`,
-    JSON.stringify({ runId, at, project, baseUrl: config.targetUrl, ...verdict }),
+    JSON.stringify({ runId, at, project, baseUrl: targetUrl, ...verdict }),
     { httpMetadata: { contentType: "application/json" } }
   );
   await writeRunMeta(env, {
@@ -314,7 +373,7 @@ async function runFlowSuite(
     kind: "flows",
     project,
     tenantId,
-    url: config.targetUrl,
+    url: targetUrl,
     status: verdict.status,
     at,
     passed: verdict.passed,
@@ -408,23 +467,43 @@ async function updateCheck(
 export async function runGitHubVerification(
   env: Env,
   ref: GitHubRepositoryRef,
-  publicUrl: string
+  publicUrl: string,
+  options: VerificationOptions = {}
 ): Promise<PlatformRunResult> {
   const token = await installationToken(env, ref.installationId);
-  const check = await createCheck(token, ref, publicUrl);
+  let check: CheckRun | undefined;
+  let claimedKey: string | undefined;
   try {
     const config = await loadGitHubPlatformConfig(token, ref);
     if (!config) {
+      check = await createCheck(token, ref, publicUrl);
       const result: PlatformRunResult = {
         conclusion: "action_required",
         title: "Argus needs a project target",
         summary:
-          "Commit `.argus/platform.json` with at least `{ \"targetUrl\": \"https://your-preview.example.com\" }`, then rerun this check.",
+          "Commit `.argus/platform.json` with either a static `targetUrl` or a `deployment.environments` preview configuration, then rerun this check.",
         detailsUrl: publicUrl,
       };
       await updateCheck(token, ref, check.id, result);
       return result;
     }
+
+    const targetUrl = options.targetUrl ?? config.targetUrl;
+    if (!targetUrl) {
+      throw new Error("waiting for a successful preview deployment with an environment URL");
+    }
+    const idempotencyKey = await runKey(ref, targetUrl);
+    if (!(await claimPlatformRun(env, idempotencyKey, options.force))) {
+      return {
+        conclusion: "success",
+        title: "Argus already verified this deployment",
+        summary: `A completed Argus run already exists for ${targetUrl}.`,
+        detailsUrl: publicUrl,
+      };
+    }
+    claimedKey = idempotencyKey;
+    check = await createCheck(token, ref, publicUrl);
+    const resolvedConfig: GitHubPlatformConfig = { ...config, targetUrl, deployment: undefined };
 
     const tenantId = await ensurePlatformTenant(env, ref);
     const project = config.project ?? `${ref.owner}/${ref.repo}`;
@@ -436,10 +515,10 @@ export async function runGitHubVerification(
           await runSmoke(
             env,
             {
-              url: config.targetUrl,
+              url: targetUrl,
               project,
-              viewports: config.viewports,
-              colorSchemes: config.colorSchemes,
+              viewports: resolvedConfig.viewports,
+              colorSchemes: resolvedConfig.colorSchemes,
             },
             tenantId
           )
@@ -453,13 +532,13 @@ export async function runGitHubVerification(
           await runAudit(
             env,
             {
-              url: config.targetUrl,
+              url: targetUrl,
               project,
-              viewports: config.viewports,
-              colorSchemes: config.colorSchemes,
+              viewports: resolvedConfig.viewports,
+              colorSchemes: resolvedConfig.colorSchemes,
               checks: ["a11y", "perf", "links", "visual"],
               updateBaseline: false,
-              authProfile: config.authProfile,
+              authProfile: resolvedConfig.authProfile,
             },
             tenantId
           )
@@ -467,19 +546,45 @@ export async function runGitHubVerification(
       );
     }
     if (config.checks.includes("flows")) {
-      suites.push(await runFlowSuite(env, await loadGitHubFlows(token, ref), config, tenantId, project));
+      suites.push(
+        await runFlowSuite(env, await loadGitHubFlows(token, ref), resolvedConfig, tenantId, project)
+      );
     }
 
     const failed = suites.some((suite) => suite.status === "fail" || suite.status === "error");
-    const primaryRun = [...suites].reverse().find((suite) => suite.runId)?.runId;
-    const detailsUrl = primaryRun ? `${publicUrl}/?run=${encodeURIComponent(primaryRun)}` : publicUrl;
+    // Prefer the audit report because it contains the richest review evidence
+    // (findings plus screenshots), then fall back to smoke or flow output.
+    const primaryRun =
+      suites.find((suite) => suite.name === "Audit" && suite.runId)?.runId ??
+      suites.find((suite) => suite.name === "Smoke" && suite.runId)?.runId ??
+      suites.find((suite) => suite.runId)?.runId;
+    const detailsUrl =
+      primaryRun && env.ARGUS_GITHUB_WEBHOOK_SECRET
+        ? await signedEvidenceUrl(
+            env.ARGUS_GITHUB_WEBHOOK_SECRET,
+            publicUrl,
+            tenantId,
+            primaryRun
+          )
+        : publicUrl;
     const result: PlatformRunResult = {
       conclusion: failed ? "failure" : "success",
       title: failed ? "Argus found issues" : "Argus verification passed",
-      summary: markdownSummary(config.targetUrl, suites),
+      summary: markdownSummary(targetUrl, suites),
       detailsUrl,
     };
     await updateCheck(token, ref, check.id, result);
+    await env.ARTIFACTS.put(
+      idempotencyKey,
+      JSON.stringify({
+        at: new Date().toISOString(),
+        targetUrl,
+        conclusion: result.conclusion,
+        detailsUrl,
+      }),
+      { httpMetadata: { contentType: "application/json" } }
+    );
+    await completePlatformRun(env, idempotencyKey, result.conclusion);
     return result;
   } catch (error) {
     const result: PlatformRunResult = {
@@ -488,7 +593,8 @@ export async function runGitHubVerification(
       summary: `The platform run failed safely: ${String(error).slice(0, 1_000)}`,
       detailsUrl: publicUrl,
     };
-    await updateCheck(token, ref, check.id, result).catch(() => undefined);
+    if (check) await updateCheck(token, ref, check.id, result).catch(() => undefined);
+    if (claimedKey) await completePlatformRun(env, claimedKey, "failure").catch(() => undefined);
     return result;
   }
 }
@@ -497,7 +603,7 @@ function repositoryRef(payload: Record<string, any>): GitHubRepositoryRef | null
   const installationId = payload.installation?.id;
   const owner = payload.repository?.owner?.login;
   const repo = payload.repository?.name;
-  const sha = payload.pull_request?.head?.sha ?? payload.check_run?.head_sha;
+  const sha = payload.pull_request?.head?.sha ?? payload.check_run?.head_sha ?? payload.deployment?.sha;
   const account = payload.installation?.account?.login ?? owner;
   if (!Number.isInteger(installationId) || !owner || !repo || !sha || !account) return null;
   return { installationId, owner, repo, sha, account };
@@ -512,7 +618,38 @@ export async function handleGitHubEvent(
   if (event === "pull_request") {
     if (!HANDLED_PULL_REQUEST_ACTIONS.has(payload.action) || payload.pull_request?.draft === true) return;
     const ref = repositoryRef(payload);
-    if (ref) await runGitHubVerification(env, ref, publicUrl);
+    if (!ref) return;
+    const token = await installationToken(env, ref.installationId);
+    const config = await loadGitHubPlatformConfig(token, ref);
+    // Deployment-driven projects start when their preview provider publishes a
+    // successful environment URL. Static targets continue to run immediately.
+    if (!config?.deployment) await runGitHubVerification(env, ref, publicUrl);
+    return;
+  }
+  if (event === "deployment_status") {
+    const ref = repositoryRef(payload);
+    const state = payload.deployment_status?.state;
+    const targetUrl = payload.deployment_status?.environment_url;
+    const environment = payload.deployment_status?.environment ?? payload.deployment?.environment;
+    if (!ref || state !== "success" || typeof targetUrl !== "string") return;
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(targetUrl);
+    } catch {
+      return;
+    }
+    if (parsedUrl.protocol !== "https:") return;
+    const token = await installationToken(env, ref.installationId);
+    const config = await loadGitHubPlatformConfig(token, ref);
+    if (!config?.deployment) return;
+    if (
+      config.deployment.environments.length > 0 &&
+      !config.deployment.environments.includes(String(environment ?? ""))
+    ) {
+      return;
+    }
+    await saveDeploymentTarget(env, ref, parsedUrl.toString(), String(environment ?? ""));
+    await runGitHubVerification(env, ref, publicUrl, { targetUrl: parsedUrl.toString() });
     return;
   }
   if (
@@ -521,6 +658,10 @@ export async function handleGitHubEvent(
     payload.requested_action?.identifier === "rerun"
   ) {
     const ref = repositoryRef(payload);
-    if (ref) await runGitHubVerification(env, ref, publicUrl);
+    if (!ref) return;
+    const token = await installationToken(env, ref.installationId);
+    const config = await loadGitHubPlatformConfig(token, ref);
+    const targetUrl = config?.deployment ? await loadDeploymentTarget(env, ref) : undefined;
+    await runGitHubVerification(env, ref, publicUrl, { targetUrl, force: true });
   }
 }

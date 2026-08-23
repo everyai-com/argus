@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import app from "./index";
+import { signedEvidenceUrl } from "./evidence";
 
 function env(overrides: Record<string, unknown> = {}) {
   return {
@@ -68,6 +69,51 @@ describe("worker API boundary", () => {
     );
     expect(response.status).toBe(401);
     expect(artifactPut).not.toHaveBeenCalled();
+  });
+
+  it("serves run evidence through an expiring signature instead of an API token", async () => {
+    const now = Date.now();
+    const signed = await signedEvidenceUrl(
+      "webhook-secret",
+      "https://argus.test",
+      "gh-123",
+      "run-1",
+      now
+    );
+    const report = {
+      runId: "run-1",
+      status: "pass",
+      url: "https://preview.example.com",
+      findings: [],
+      screenshots: [],
+    };
+    const response = await app.request(
+      signed,
+      {},
+      env({
+        ARGUS_GITHUB_WEBHOOK_SECRET: "webhook-secret",
+        ARTIFACTS: {
+          get: vi.fn(async (key: string) =>
+            key.endsWith("report.json") ? { json: async () => report } : null
+          ),
+        },
+      })
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(await response.text()).toContain("Argus verification evidence");
+
+    const tampered = new URL(signed);
+    tampered.pathname = tampered.pathname.replace("run-1", "run-2");
+    expect(
+      (
+        await app.request(
+          tampered.toString(),
+          {},
+          env({ ARGUS_GITHUB_WEBHOOK_SECRET: "webhook-secret" })
+        )
+      ).status
+    ).toBe(403);
   });
 
   it("validates input before allocating a browser", async () => {

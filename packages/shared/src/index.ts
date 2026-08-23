@@ -207,7 +207,15 @@ export type PlatformCheck = z.infer<typeof PlatformCheckSchema>;
 
 export const GitHubPlatformConfigSchema = z
   .object({
-    targetUrl: z.string().url(),
+    /** Test one stable environment as soon as a pull request changes. */
+    targetUrl: z.string().url().optional(),
+    /** Or wait for a provider/GitHub Actions preview deployment to succeed. */
+    deployment: z
+      .object({
+        environments: z.array(z.string().min(1).max(80)).max(20).default([]),
+      })
+      .strict()
+      .optional(),
     project: z.string().max(60).optional(),
     checks: z
       .array(PlatformCheckSchema)
@@ -221,7 +229,10 @@ export const GitHubPlatformConfigSchema = z
     flowConcurrency: z.number().int().min(1).max(8).default(3),
     authProfile: AuthProfileNameSchema.optional(),
   })
-  .strict();
+  .strict()
+  .refine((config) => Boolean(config.targetUrl) !== Boolean(config.deployment), {
+    message: "configure exactly one of targetUrl or deployment",
+  });
 export type GitHubPlatformConfig = z.infer<typeof GitHubPlatformConfigSchema>;
 
 // ---------------------------------------------------------------------------

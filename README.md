@@ -61,6 +61,29 @@ Open the dashboard at your worker URL, paste the token, and watch runs land —
 findings, screenshots, and baseline/current/diff triptychs, each with a
 **copy fix prompt** button for your agent.
 
+## GitHub platform
+
+Install the Argus GitHub App once and select the repositories it may test. A
+signed webhook starts `Argus Verification` automatically for pull requests,
+using either a stable `targetUrl` or the HTTPS `environment_url` from a
+successful preview deployment:
+
+```jsonc
+// .argus/platform.json
+{
+  "deployment": { "environments": ["Preview"] },
+  "checks": ["smoke", "audit", "flows"],
+  "viewports": ["mobile", "desktop"],
+  "flowConcurrency": 3
+}
+```
+
+The Check Run contains the verdict and highest-priority findings, links to a
+24-hour signed evidence page with screenshots, and exposes a **Rerun** action.
+Provider retries for the same commit and preview URL are deduplicated before a
+browser starts. No GitHub or Argus bearer token is committed to the repository
+or placed in an evidence URL. See [the GitHub App setup](docs/github-app.md).
+
 ### With Claude Code
 
 `.mcp.json` registers the `argus` MCP server. Tools:

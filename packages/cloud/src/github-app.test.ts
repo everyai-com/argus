@@ -43,4 +43,17 @@ describe("GitHub App security boundary", () => {
       }).success
     ).toBe(false);
   });
+
+  it("supports provider preview deployments without allowing ambiguous targets", () => {
+    expect(
+      GitHubPlatformConfigSchema.parse({ deployment: {} })
+    ).toMatchObject({ deployment: { environments: [] } });
+    expect(
+      GitHubPlatformConfigSchema.safeParse({
+        targetUrl: "https://production.example.com",
+        deployment: {},
+      }).success
+    ).toBe(false);
+    expect(GitHubPlatformConfigSchema.safeParse({ checks: ["audit"] }).success).toBe(false);
+  });
 });

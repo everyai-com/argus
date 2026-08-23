@@ -92,11 +92,15 @@ function GitHubView(): React.ReactElement {
           Commit <code className="k">.argus/platform.json</code>. Credentials never belong in this file.
         </p>
         <pre className="config-example">{`{
-  "targetUrl": "https://preview.example.com",
+  "deployment": { "environments": ["Preview"] },
   "checks": ["smoke", "audit", "flows"],
   "viewports": ["mobile", "desktop"],
   "flowConcurrency": 3
 }`}</pre>
+        <p className="muted small">
+          Argus starts when GitHub receives a successful HTTPS preview deployment. For a stable staging site,
+          replace <code className="k">deployment</code> with <code className="k">targetUrl</code>.
+        </p>
       </div>
     </div>
   );
