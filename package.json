@@ -1,0 +1,21 @@
+{
+  "name": "argus",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Argus — cloud verification platform: parallel browser testing on Cloudflare with agent-driven exploration and visual feedback",
+  "packageManager": "pnpm@11.3.0",
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "pnpm typecheck && pnpm test && pnpm build",
+    "deploy": "pnpm --filter @argus/cloud deploy"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.7"
+  }
+}

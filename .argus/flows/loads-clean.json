@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "name": "loads-clean",
+  "startUrl": "https://overseas-brad-married-maximum.trycloudflare.com/",
+  "viewport": "mobile",
+  "steps": [
+    {
+      "action": {
+        "action": "wait",
+        "ms": 1500
+      },
+      "expect": []
+    }
+  ],
+  "success": [
+    {
+      "kind": "visible",
+      "anchor": {
+        "testid": "task-list"
+      }
+    },
+    {
+      "kind": "console-clean",
+      "since": 0
+    }
+  ],
+  "dynamic": []
+}

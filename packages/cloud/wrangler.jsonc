@@ -1,0 +1,37 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "argus-cloud",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  // Concurrency: paid Browser Rendering allows ~120 concurrent browsers. Cap at 60
+  // for headroom; keep up to 16 warm when idle so parallel leases reconnect fast.
+  "vars": { "ARGUS_MAX_SESSIONS": "60", "ARGUS_MAX_WARM": "16" },
+
+  // Headless Chromium on Cloudflare's network
+  "browser": { "binding": "BROWSER" },
+
+  // Screenshots, traces, baselines, run reports
+  "r2_buckets": [
+    { "binding": "ARTIFACTS", "bucket_name": "argus-artifacts" }
+  ],
+
+  "durable_objects": {
+    "bindings": [
+      { "name": "BROWSER_SESSION", "class_name": "BrowserSession" },
+      { "name": "COORDINATOR", "class_name": "Coordinator" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["BrowserSession", "Coordinator"] }
+  ],
+
+  // Dashboard placeholder — API paths always hit the worker first
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/v1/*", "/health"]
+  }
+}

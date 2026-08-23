@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "name": "add-task",
+  "startUrl": "https://overseas-brad-married-maximum.trycloudflare.com/",
+  "viewport": "desktop",
+  "steps": [
+    {
+      "action": {
+        "action": "wait",
+        "ms": 1500
+      },
+      "expect": []
+    },
+    {
+      "action": {
+        "action": "fill",
+        "value": "Buy milk"
+      },
+      "anchor": {
+        "testid": "new-task"
+      },
+      "expect": []
+    },
+    {
+      "action": {
+        "action": "click"
+      },
+      "anchor": {
+        "testid": "add-task"
+      },
+      "expect": [
+        {
+          "kind": "network",
+          "urlIncludes": "/api/tasks",
+          "method": "POST",
+          "status": 201,
+          "minCount": 1,
+          "maxCount": 1,
+          "since": 0
+        }
+      ]
+    }
+  ],
+  "success": [
+    {
+      "kind": "text",
+      "anchor": {
+        "testid": "task-count"
+      },
+      "includes": "3 task(s)"
+    },
+    {
+      "kind": "console-clean",
+      "since": 0
+    }
+  ],
+  "dynamic": []
+}
