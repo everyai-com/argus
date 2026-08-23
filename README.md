@@ -51,6 +51,7 @@ wrangler deploy
 
 # in any project you want tested
 argus init https://argus-cloud.<you>.workers.dev <token>
+argus verify https://your-app.example.com  # smoke + audit + every saved flow
 argus test https://your-app.example.com    # deployed app
 argus test --local 3000                    # local app (auto quick-tunnel)
 argus audit https://your-app.example.com   # a11y + perf + links + visual
@@ -67,6 +68,11 @@ findings, screenshots, and baseline/current/diff triptychs, each with a
 `argus_observe`, `argus_assert`, `argus_screenshot`, `argus_smoke`,
 `argus_audit`, `argus_record`, `argus_flow_save/list/replay/verify/heal`,
 `argus_flow_import_reticle`, `argus_runs`, `argus_findings`.
+
+Reticle v1 flows can be imported through the MCP tool, including canonical
+testid/role anchors and network, console, element, and state expectations. See
+[the compatibility matrix](docs/reticle-compatibility.md) for the deliberate
+boundary between Argus cloud execution and Reticle's framework-specific packages.
 
 Say `/argus-explore <url>` to have Claude map the app, generate flows, and
 audit everything in parallel.

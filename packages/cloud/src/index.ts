@@ -28,9 +28,6 @@ import { runSmoke } from "./smoke";
 import { runAudit } from "./audit";
 import { replayFlow, verifyFlows } from "./flows";
 
-export { BrowserSession } from "./do/browser-session";
-export { Coordinator } from "./do/coordinator";
-
 const ADMIN_TENANT = "_admin";
 
 interface ResolvedTenant {

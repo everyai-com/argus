@@ -185,6 +185,63 @@ async function main(): Promise<void> {
   const cfg = loadConfig();
 
   switch (command) {
+    case "verify": {
+      const url = args.find((a) => !a.startsWith("-"));
+      if (!url) {
+        console.error("usage: argus verify <url> [--no-flows]");
+        process.exit(2);
+      }
+      const project = basename(process.cwd());
+      const flowsPath = join(process.cwd(), ".argus", "flows");
+      const flows =
+        !args.includes("--no-flows") && existsSync(flowsPath)
+          ? readdirSync(flowsPath)
+              .filter((file) => file.endsWith(".json"))
+              .map((file) =>
+                resolveEnvPlaceholders(JSON.parse(readFileSync(join(flowsPath, file), "utf8")))
+              )
+          : [];
+      console.log(
+        dim(
+          `argus → ${cfg.api} · full verification of ${url} ` +
+            `(smoke + audit${flows.length ? ` + ${flows.length} flows` : ""}) ...`
+        )
+      );
+      const [smoke, audit, suite] = await Promise.all([
+        api<{ status: string; findings: unknown[]; runId: string }>(cfg, "POST", "/v1/smoke", {
+          url,
+          project,
+        }),
+        api<{ status: string; findings: unknown[]; runId: string }>(cfg, "POST", "/v1/audit", {
+          url,
+          project,
+        }),
+        flows.length
+          ? api<{ status: string; passed: number; failed: number; runId: string }>(
+              cfg,
+              "POST",
+              "/v1/flows/verify",
+              { flows, baseUrl: url, project, concurrency: 4 }
+            )
+          : Promise.resolve(undefined),
+      ]);
+      const checks = [
+        { name: "smoke", status: smoke.status, detail: `${smoke.findings.length} finding(s)` },
+        { name: "audit", status: audit.status, detail: `${audit.findings.length} finding(s)` },
+        ...(suite
+          ? [{ name: "flows", status: suite.status, detail: `${suite.passed} passed, ${suite.failed} failed` }]
+          : [{ name: "flows", status: "skipped", detail: "no .argus/flows (or --no-flows)" }]),
+      ];
+      const ok = checks.every((check) => check.status === "pass" || check.status === "skipped");
+      console.log(`\n${ok ? green(bold(" VERIFY PASS ")) : red(bold(" VERIFY FAIL "))} ${bold(url)}\n`);
+      for (const check of checks) {
+        const mark = check.status === "pass" ? green("✔") : check.status === "skipped" ? yellow("●") : red("✘");
+        console.log(`  ${mark} ${check.name}: ${check.status} ${dim(`(${check.detail})`)}`);
+      }
+      console.log();
+      process.exit(ok ? 0 : 1);
+      break;
+    }
     case "test": {
       const localFlag = args.indexOf("--local");
       const portArg = localFlag === -1 ? undefined : args[localFlag + 1];
@@ -653,6 +710,7 @@ routes, API handlers, or user-facing behavior — before declaring the work done
       console.log(`${bold("argus")} — cloud verification platform
 
 usage:
+  argus verify <url>           automatically run smoke + audit + every saved flow
   argus test <url>             run the smoke suite against a URL
   argus test --local <port>    tunnel a local app to the cloud and test it
   argus audit <url>            full audit: a11y, perf, links, visual regression
@@ -666,7 +724,7 @@ usage:
   argus config                 show resolved config
 
 config: set ARGUS_API / ARGUS_TOKEN env vars, or .argus/config.json { "api": "...", "token": "..." }`);
-      process.exit(command ? 2 : 0);
+      process.exit(command && command !== "help" && command !== "--help" && command !== "-h" ? 2 : 0);
   }
 }
 

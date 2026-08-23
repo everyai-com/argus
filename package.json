@@ -7,8 +7,9 @@
   "scripts": {
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
-    "test": "vitest run",
+    "test": "pnpm --filter @argus/cli build && pnpm --filter @argus/mcp build && vitest run",
     "test:watch": "vitest",
+    "test:e2e:live": "node scripts/live-e2e.mjs",
     "check": "pnpm typecheck && pnpm test && pnpm build",
     "deploy": "pnpm --filter @argus/cloud deploy"
   },

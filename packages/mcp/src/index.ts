@@ -595,35 +595,95 @@ server.tool(
     const warnings: string[] = [];
     for (const f of readdirSync(reticleDir).filter((x) => x.endsWith(".json"))) {
       const raw = JSON.parse(readFileSync(join(reticleDir, f), "utf8"));
-      const name = String(raw.name ?? basename(f, ".json")).replace(/[^a-zA-Z0-9_-]/g, "-");
-      const steps = (raw.steps ?? [])
-        .filter((s: Record<string, unknown>) => s.anchor)
-        .map((s: { anchor: { testid?: string; role?: string; name?: string }; action?: string; expect?: { signal?: string } }) => {
-          if (s.expect?.signal)
-            warnings.push(`${name}: signal expect "${s.expect.signal}" → console-clean guard (signals need the in-app SDK)`);
-          return {
-            action: { action: s.action === "click" || !s.action ? "click" : s.action },
-            anchor: s.anchor.testid
-              ? { testid: s.anchor.testid }
-              : { role: s.anchor.role, name: s.anchor.name },
-            expect: s.expect?.signal ? [{ kind: "console-clean", since: 0 }] : [],
-          };
-        });
+      const source = raw.flow ?? raw;
+      const name = String(source.name ?? raw.name ?? basename(f, ".json")).replace(
+        /[^a-zA-Z0-9_-]/g,
+        "-"
+      );
+      const toAnchor = (anchor: Record<string, unknown> | undefined) => {
+        if (!anchor) return undefined;
+        if (typeof anchor.testid === "string") return { testid: anchor.testid };
+        if (anchor.kind === "testid" && typeof anchor.value === "string") return { testid: anchor.value };
+        if (typeof anchor.role === "string") {
+          return { role: anchor.role, ...(typeof anchor.name === "string" ? { name: anchor.name } : {}) };
+        }
+        return undefined;
+      };
+      const toPredicates = (expect: Record<string, any> | undefined) => {
+        const predicates: Array<Record<string, unknown>> = [];
+        if (!expect) return predicates;
+        if (expect.net) {
+          predicates.push({
+            kind: "network",
+            urlIncludes: expect.net.urlContains ?? "",
+            ...(expect.net.method ? { method: expect.net.method } : {}),
+            ...(expect.net.status !== undefined ? { status: expect.net.status } : {}),
+            minCount: expect.net.count ?? 1,
+            ...(expect.net.count !== undefined ? { maxCount: expect.net.count } : {}),
+            since: 0,
+          });
+        }
+        if (expect.console?.absent !== false && expect.console) {
+          predicates.push({ kind: "console-clean", since: 0 });
+        } else if (expect.console) {
+          warnings.push(`${name}: positive console expectation is not portable and was skipped`);
+        }
+        if (expect.element) {
+          const anchor = toAnchor(expect.element);
+          if (anchor) predicates.push({ kind: "visible", anchor });
+        }
+        if (expect.state?.path) {
+          predicates.push({
+            kind: "state",
+            store: expect.state.store ?? "default",
+            path: expect.state.path,
+            ...(expect.state.equals !== undefined ? { equals: expect.state.equals } : { exists: true }),
+          });
+        }
+        if (expect.signal) {
+          warnings.push(
+            `${name}: signal expect "${expect.signal}" → console-clean guard (Reticle and Argus SDK signals are not interchangeable)`
+          );
+          predicates.push({ kind: "console-clean", since: 0 });
+        }
+        return predicates;
+      };
+      const steps = (source.steps ?? []).flatMap((s: Record<string, any>) => {
+        const anchor = toAnchor(s.anchor);
+        if (!anchor) {
+          warnings.push(`${name}: skipped a step with an unsupported ${String(s.anchor?.kind ?? "missing")} anchor`);
+          return [];
+        }
+        const actionName = s.action ?? "click";
+        const args = s.args ?? {};
+        let action: Record<string, unknown> | undefined;
+        if (actionName === "click" || actionName === "hover") action = { action: actionName };
+        else if (actionName === "fill" || actionName === "type") {
+          action = { action: "fill", value: String(args.value ?? args.text ?? "") };
+        } else if (actionName === "select") action = { action: "select", value: String(args.value ?? "") };
+        else if (actionName === "press") action = { action: "press", key: String(args.key ?? "Enter") };
+        if (!action) {
+          warnings.push(`${name}: skipped unsupported action "${String(actionName)}"`);
+          return [];
+        }
+        return [{ action, anchor, expect: toPredicates(s.expect) }];
+      });
       if (steps.length === 0) {
         warnings.push(`${name}: skipped — no anchored steps`);
         continue;
       }
-      const success = raw.success?.signal
-        ? [{ kind: "console-clean" as const, since: 0 }]
-        : raw.success?.testid
-          ? [{ kind: "visible" as const, anchor: { testid: String(raw.success.testid) } }]
-          : [{ kind: "console-clean" as const, since: 0 }];
-      if (raw.success?.signal)
-        warnings.push(`${name}: success signal "${raw.success.signal}" → console-clean (weaker; add a network/route predicate)`);
+      const success = toPredicates(source.success);
+      if (success.length === 0) {
+        warnings.push(`${name}: no portable success condition; added console-clean (add a network/route assertion)`);
+        success.push({ kind: "console-clean", since: 0 });
+      }
+      const importedUrl = source.startPath
+        ? new URL(String(source.startPath), startUrl).toString()
+        : startUrl;
       const flow = FlowSchema.parse({
         version: 1,
         name,
-        startUrl,
+        startUrl: importedUrl,
         viewport: "desktop",
         steps,
         success,
