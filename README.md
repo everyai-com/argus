@@ -260,3 +260,19 @@ argus_email_link({ address, contains: "verify-email" }) → the link to drive
 
 Verified end to end on grandstage: sign up → `email_verified = 0` → read the
 emailed link → visit it in a cloud browser → `email_verified = 1`.
+
+---
+
+## Part of the everyai-com agent stack
+
+Open-source infrastructure for local-first, governed AI agents:
+
+- [distillory](https://github.com/everyai-com/distillory) — local-first memory engine that reasons at ingestion
+- [agentprofile](https://github.com/everyai-com/agentprofile) — one agent identity — skills, credentials, memory — across every tool
+- [agent-ready](https://github.com/everyai-com/agent-ready) — turn any app into an MCP server + API + CLI, safe by default
+- [primer](https://github.com/everyai-com/primer) — live business context injected into any agent
+- [plainsync](https://github.com/everyai-com/plainsync) — local-first Markdown workspace for humans + agents
+- [mintly-alternative](https://github.com/everyai-com/mintly-alternative) — self-hostable documentation layer for humans + AI agents
+- [talltrack](https://github.com/everyai-com/talltrack) — sales calls in, publishable content out
+
+Built by [Phanindra Reddy](https://github.com/everyai-com) · [magicteams.ai](https://magicteams.ai)
