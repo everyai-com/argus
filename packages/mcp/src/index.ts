@@ -1,9 +1,10 @@
 /**
  * argus-mcp — MCP server exposing the Argus cloud browser to coding agents.
  *
- * The agent (Claude Code, on the user's subscription) is the brain; these
- * tools are its hands and eyes on cloud Chromium. Parallelism falls out
- * naturally: N subagents each lease their own isolated session.
+ * The agent (Claude Code, Codex, Cursor, VS Code, or any MCP client, running on
+ * the user's own subscription) is the brain; these tools are its hands and eyes
+ * on cloud Chromium. Parallelism falls out naturally: N subagents each lease
+ * their own isolated session.
  *
  * Config: env ARGUS_API / ARGUS_TOKEN, else .argus/config.json walking up
  * from cwd.
@@ -79,7 +80,32 @@ const jsonResult = (data: unknown) => ({
 
 // --- server -----------------------------------------------------------------
 
-const server = new McpServer({ name: "argus", version: "0.1.0" });
+/**
+ * Returned to every MCP client on initialize. Kept harness-neutral: any client
+ * that surfaces `instructions` gains the lifecycle and rules without needing a
+ * CLAUDE.md / AGENTS.md / rules file wired up.
+ */
+const ARGUS_INSTRUCTIONS = `Argus runs a real cloud Chromium and reports evidence-graded verdicts.
+
+Typical loop: argus_lease a URL (each parallel agent or flow holds its OWN session)
+→ argus_query to find elements by semantic anchor → argus_act / argus_act_batch to
+drive the app → argus_observe and argus_assert for network/console/route truth →
+argus_screenshot to see the page → argus_release when done.
+
+Save discovered journeys as deterministic flows: argus_record, then argus_flow_save
+with network/route success predicates. After any change, argus_flow_verify replays
+the suite; argus_flow_heal rebinds drifted anchors.
+
+Rules: verdicts report the WEAKEST evidence tier they rest on
+(signal > consequence > dom > visual) — never upgrade a tier. Unresolvable or
+ambiguous anchors are errors, not guesses. A flow may contain \${VAR} placeholders
+resolved from the environment at call time; if a value is missing, ask the user
+rather than inventing or hard-coding a secret. Release every session when done.`;
+
+const server = new McpServer(
+  { name: "argus", version: "0.1.0" },
+  { instructions: ARGUS_INSTRUCTIONS }
+);
 
 server.tool(
   "argus_lease",

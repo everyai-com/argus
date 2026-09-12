@@ -46,6 +46,10 @@ describe("MCP executable", () => {
           "argus_audit",
         ])
       );
+      // Any MCP client — not just Claude Code — gets the lifecycle guidance
+      // from initialize, with no per-harness instruction file required.
+      expect(client.getInstructions()).toContain("argus_lease");
+      expect(client.getInstructions()).toContain("argus_flow_verify");
     } finally {
       await client.close();
       await transport.close().catch(() => {});

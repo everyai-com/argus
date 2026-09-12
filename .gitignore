@@ -7,4 +7,5 @@ coverage/
 .DS_Store
 .argus/runs/
 .argus/config.json
+.commandcode/
 reticle/

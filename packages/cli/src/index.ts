@@ -9,12 +9,12 @@
  * (walking up from cwd), else defaults.
  */
 import { readFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
-import { join, dirname, basename } from "node:path";
+import { join, dirname, basename, relative } from "node:path";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import process from "node:process";
 import type { SmokeReport } from "@argus/shared";
 import { buildCfSaasFlows, probeApp } from "./preset";
+import { wireHarnesses, mcpServerPath } from "./harness";
 
 // --- tiny ANSI helpers (no deps) -------------------------------------------
 const isTTY = process.stdout.isTTY;
@@ -372,10 +372,16 @@ async function main(): Promise<void> {
       break;
     }
     case "init": {
-      // argus init <api-url> <token> — wire a project to an Argus cloud.
-      const [apiUrl, token] = args.filter((a) => !a.startsWith("-"));
+      // argus init <api-url> <token> [--harness all|csv] [--write-global]
+      const harnessIdx = args.indexOf("--harness");
+      const harnessSel = harnessIdx !== -1 ? args[harnessIdx + 1] : undefined;
+      const writeGlobal = args.includes("--write-global");
+      const positional = args.filter((a, i) => !a.startsWith("-") && i !== harnessIdx + 1);
+      const [apiUrl, token] = positional;
       if (!apiUrl || !token) {
-        console.error("usage: argus init <api-url> <token>");
+        console.error(
+          "usage: argus init <api-url> <token> [--harness claude,cursor,vscode,agents,codex|all] [--write-global]"
+        );
         process.exit(2);
       }
       mkdirSync(join(process.cwd(), ".argus", "flows"), { recursive: true });
@@ -383,44 +389,25 @@ async function main(): Promise<void> {
         join(process.cwd(), ".argus", "config.json"),
         JSON.stringify({ api: apiUrl.replace(/\/$/, ""), token }, null, 2) + "\n"
       );
-      // Register the MCP server for Claude Code if not already present.
-      const mcpPath = join(process.cwd(), ".mcp.json");
-      const mcp = existsSync(mcpPath) ? JSON.parse(readFileSync(mcpPath, "utf8")) : {};
-      mcp.mcpServers = mcp.mcpServers ?? {};
-      if (!mcp.mcpServers.argus) {
-        // Point at the argus-mcp build that ships alongside this CLI build.
-        const mcpServer = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "mcp", "dist", "index.js");
-        mcp.mcpServers.argus = { command: "node", args: [mcpServer] };
-        writeFileSync(mcpPath, JSON.stringify(mcp, null, 2) + "\n");
-      }
-      // Standing instructions so the coding agent verifies automatically.
-      const claudeMdPath = join(process.cwd(), "CLAUDE.md");
-      const existing = existsSync(claudeMdPath) ? readFileSync(claudeMdPath, "utf8") : "";
-      if (!existing.includes("## Verification (Argus)")) {
-        const section = `${existing.trim() ? existing.trimEnd() + "\n\n" : ""}## Verification (Argus)
-
-This project is wired to Argus (cloud verification). After ANY change to UI,
-routes, API handlers, or user-facing behavior — before declaring the work done:
-
-1. If the app runs locally, ensure a tunnel is up (\`argus tunnel <port>\`).
-2. Run \`argus_flow_verify\` (MCP) to replay all saved flows. Fix every failure
-   from its decision envelope (whatChanged → nextAction), then re-verify.
-3. Run \`argus_audit\` on changed pages — treat critical/major findings
-   (a11y, visual diff, perf) as part of the task, not follow-ups.
-4. When you build a NEW user-facing feature, drive it once with argus tools
-   under \`argus_record\`, then \`argus_flow_save\` with network/route success
-   predicates — the test suite must grow with the app.
-5. Flows may use \`\${VAR}\` placeholders for test logins/URLs — they resolve
-   from the environment at replay time. If a replay reports missing values,
-   ASK THE USER for them (never invent or hard-code secrets in flow files).
-6. A task is only done when flows pass with consequence-tier evidence.
-`;
-        writeFileSync(claudeMdPath, section);
-        console.log(`${green("✔")} CLAUDE.md: added standing verification instructions for coding agents`);
-      }
       console.log(`${green("✔")} .argus/config.json written`);
       console.log(`${green("✔")} .argus/flows/ ready (commit this directory)`);
-      console.log(`${green("✔")} .mcp.json registers the argus MCP server for Claude Code`);
+
+      // Register the MCP server (and standing instructions) in each harness.
+      // Defaults to Claude Code + AGENTS.md, plus Cursor/VS Code when detected;
+      // --harness all adds the global Codex config snippet.
+      const result = wireHarnesses(
+        process.cwd(),
+        { command: "node", args: [mcpServerPath()] },
+        { harnesses: harnessSel, writeGlobal }
+      );
+      const rel = (p: string) => relative(process.cwd(), p) || p;
+      for (const file of result.written) console.log(`${green("✔")} ${rel(file)}`);
+      for (const label of result.unchanged) console.log(`${dim("•")} ${label} already wired`);
+      for (const note of result.notes) console.log(`\n${yellow("!")} ${note}`);
+      if (result.harnesses.length) {
+        console.log(dim(`harnesses: ${result.harnesses.join(", ")}`));
+      }
+
       console.log(`\ntry:  ${bold("argus test <your-app-url>")}   or   ${bold("argus test --local <port>")}`);
       break;
     }
@@ -716,6 +703,9 @@ usage:
   argus audit <url>            full audit: a11y, perf, links, visual regression
   argus preset cf-saas <url>   generate the baseline flow suite for a CF+React+better-auth app
   argus audit --update-baseline <url>   approve current look as the baseline
+  argus init <api> <token>     wire this project to Argus — MCP server + verification
+                               steps for Claude Code, Cursor, VS Code, Codex, any
+                               AGENTS.md reader (--harness all, --write-global)
   argus tunnel <port>          hold a tunnel open (for agent-driven sessions)
   argus sessions               list active cloud browser sessions
   argus capacity [--watch]     live fleet capacity: browsers, warm pool, per-tenant usage

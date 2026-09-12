@@ -9,7 +9,8 @@ Inspired by [Reticle](https://github.com/reticlehq/reticle)'s verification
 discipline (assert consequences, not appearances) and
 [axstream](https://github.com/milind-soni/axstream)'s resolution-ladder +
 verify-or-refuse ideas — rebuilt cloud-native, zero-install, with the AI brain
-running on your **Claude subscription** (no API key anywhere).
+running on your **existing coding agent** — Claude Code, Codex, Cursor, VS Code,
+or anything that speaks MCP (no API key anywhere).
 
 ## What it does
 
@@ -18,7 +19,7 @@ running on your **Claude subscription** (no API key anywhere).
 | **Smoke** | loads · console clean · network clean · responsive, at 3 viewports, screenshots | deterministic, no model |
 | **Flows** | record once → deterministic cloud replay with semantic anchors (testid → role → text → css), drift detection, nearest-match self-heal, decision envelopes | deterministic, no model |
 | **Audit** | axe-core WCAG A/AA · FCP/LCP/CLS · broken links · horizontal overflow · pixel-diff visual regression vs baselines | deterministic, no model |
-| **Exploration** | Claude maps the app, drives journeys in parallel subagents, saves new flows, judges screenshots | your Claude subscription |
+| **Exploration** | your coding agent maps the app, drives journeys in parallel subagents, saves new flows, judges screenshots | your coding agent's own subscription |
 
 Evidence is **tiered** (app signal > network/route consequence > DOM presence)
 and every verdict names the weakest tier it rests on. A failing check returns a
@@ -28,7 +29,7 @@ actionable feedback your agent can fix from directly.
 ## Architecture
 
 ```
-Claude Code (your subscription) ──MCP──► argus-mcp ──HTTPS──► argus-cloud (CF Worker)
+your coding agent (Claude Code, Codex, Cursor…) ──MCP──► argus-mcp ──HTTPS──► argus-cloud (CF Worker)
                                                               ├─ Browser Rendering (Chromium)
    argus CLI ────────────────────────────HTTPS───────────────►├─ BrowserSession DO (per lease)
    cloudflared quick tunnel ◄── local apps                    ├─ Coordinator DO (cap + fleet)
@@ -37,7 +38,7 @@ Claude Code (your subscription) ──MCP──► argus-mcp ──HTTPS──�
 ```
 
 - Deterministic work (replay, diff, audits) runs 100% in the Worker — cron/CI-able.
-- AI work (exploration, visual judgment, fixes) runs in Claude Code on your subscription.
+- AI work (exploration, visual judgment, fixes) runs in your coding agent on its subscription.
 - One `Coordinator` caps concurrent browsers; each lease is an isolated context.
 
 ## Quick start
@@ -84,21 +85,59 @@ Provider retries for the same commit and preview URL are deduplicated before a
 browser starts. No GitHub or Argus bearer token is committed to the repository
 or placed in an evidence URL. See [the GitHub App setup](docs/github-app.md).
 
-### With Claude Code
+### Install in your harness
 
-`.mcp.json` registers the `argus` MCP server. Tools:
+Argus ships one stdio MCP server that works with any MCP client — the harness
+only changes *where* you register it. `argus init <api-url> <token>` wires the
+server into Claude Code and every project harness it detects; add `--harness all`
+to write them all, or `--write-global` to also update the global Codex config.
+
+**Claude Code** — `.mcp.json` (written by `argus init`):
+
+```json
+{ "mcpServers": { "argus": { "command": "node", "args": ["<repo>/packages/mcp/dist/index.js"] } } }
+```
+
+**Cursor** — `.cursor/mcp.json` (same `mcpServers` shape):
+
+```json
+{ "mcpServers": { "argus": { "command": "node", "args": ["<repo>/packages/mcp/dist/index.js"] } } }
+```
+
+**VS Code / Copilot** — `.vscode/mcp.json` (`servers`, with an explicit `type`):
+
+```json
+{ "servers": { "argus": { "type": "stdio", "command": "node", "args": ["<repo>/packages/mcp/dist/index.js"] } } }
+```
+
+**Codex CLI** — `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.argus]
+command = "node"
+args = ["<repo>/packages/mcp/dist/index.js"]
+```
+
+Tools:
 `argus_lease/release/sessions`, `argus_query`, `argus_act`, `argus_act_batch`,
 `argus_observe`, `argus_assert`, `argus_screenshot`, `argus_smoke`,
 `argus_audit`, `argus_record`, `argus_flow_save/list/replay/verify/heal`,
 `argus_flow_import_reticle`, `argus_runs`, `argus_findings`.
+
+The server also returns this lifecycle as `instructions` on initialize, so any
+client that surfaces it needs no instruction file at all. Harnesses that read
+`AGENTS.md` (Codex, Cursor, Copilot, Gemini CLI, Zed, Cline, Windsurf) pick up the
+standing verification steps `argus init` writes. The full matrix is in
+[docs/harness-support.md](docs/harness-support.md).
 
 Reticle v1 flows can be imported through the MCP tool, including canonical
 testid/role anchors and network, console, element, and state expectations. See
 [the compatibility matrix](docs/reticle-compatibility.md) for the deliberate
 boundary between Argus cloud execution and Reticle's framework-specific packages.
 
-Say `/argus-explore <url>` to have Claude map the app, generate flows, and
-audit everything in parallel.
+Say `/argus-explore <url>` in Claude Code — or run the `argus-explore` protocol
+from [skills/argus-explore.md](skills/argus-explore.md) in any other harness — to
+have the agent map the app, generate flows, and audit everything in parallel.
 
 ## Flows are your test suite
 
@@ -177,7 +216,7 @@ measured ~2× faster than sequential at 3 flows, scaling with the session cap.
 packages/shared     zod wire contract — every schema crossing a boundary
 packages/cloud      CF Worker: API, DOs, replay engine, audits, dashboard hosting
 packages/cli        argus init/test/audit/tunnel/sessions/config
-packages/mcp        MCP server for Claude Code
+packages/mcp        MCP server (any MCP client)
 packages/dashboard  React dashboard (builds into cloud/public)
 apps/demo           dogfood app with injectable bug switchboard (?bug=…)
 ```
