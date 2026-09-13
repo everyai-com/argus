@@ -371,10 +371,26 @@ export const ConsoleEventSchema = z.object({
 });
 export type ConsoleEvent = z.infer<typeof ConsoleEventSchema>;
 
+/**
+ * A streaming transport event — WebSocket frames and SSE/EventSource activity.
+ * Neither shows up as a request/response pair, so a "real-time" feature can be
+ * silently dead while every REST check stays green.
+ */
+export const StreamEventSchema = z.object({
+  seq: z.number().int(),
+  stream: z.enum(["websocket", "sse"]),
+  url: z.string(),
+  /** Frames are sent/received; open/close are the connection lifecycle. */
+  direction: z.enum(["sent", "received", "open", "close"]).default("received"),
+  data: z.string().optional(),
+  at: z.number().int(),
+});
+export type StreamEvent = z.infer<typeof StreamEventSchema>;
+
 export const ObserveRequestSchema = z.object({
   since: z.number().int().default(0), // cursor: only events with seq > since
   what: z
-    .array(z.enum(["network", "console", "route"]))
+    .array(z.enum(["network", "console", "route", "stream"]))
     .default(["network", "console", "route"]),
 });
 export type ObserveRequest = z.infer<typeof ObserveRequestSchema>;
@@ -383,6 +399,7 @@ export const ObserveResponseSchema = z.object({
   cursor: z.number().int(),
   network: z.array(NetworkEventSchema).default([]),
   console: z.array(ConsoleEventSchema).default([]),
+  stream: z.array(StreamEventSchema).default([]),
   route: z.object({ url: z.string(), title: z.string() }).optional(),
 });
 export type ObserveResponse = z.infer<typeof ObserveResponseSchema>;
@@ -410,6 +427,21 @@ export const LeafPredicateSchema = z.discriminatedUnion("kind", [
     includeThirdParty: z.boolean().default(false),
   }),
   z.object({ kind: z.literal("route"), includes: z.string() }),
+  /**
+   * A streaming transport actually did something — a WebSocket frame, or an
+   * SSE/EventSource connection. Real-time features fail silently when nobody
+   * reads the socket, and a REST check can't see it.
+   */
+  z.object({
+    kind: z.literal("stream"),
+    urlIncludes: z.string(),
+    stream: z.enum(["websocket", "sse"]).optional(),
+    direction: z.enum(["sent", "received", "open", "close"]).optional(),
+    dataIncludes: z.string().optional(),
+    minCount: z.number().int().default(1),
+    maxCount: z.number().int().optional(),
+    since: z.number().int().default(0),
+  }),
   z.object({ kind: z.literal("visible"), anchor: AnchorSchema }),
   z.object({ kind: z.literal("hidden"), anchor: AnchorSchema }),
   z.object({

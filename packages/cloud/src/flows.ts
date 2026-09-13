@@ -21,6 +21,7 @@ import {
   type NetworkEvent,
   type Predicate,
   type PredicateResult,
+  type StreamEvent,
 } from "@argus/shared";
 import { evalPredicate, nearestMatch, resolveAnchor, weakestTier } from "./verify";
 import { hostOf, loadAuthProfile, saveAuthProfile } from "./auth-store";
@@ -46,11 +47,19 @@ export interface ReplayOutcome extends FlowReplayResult {
 interface Buffers {
   network: NetworkEvent[];
   console: ConsoleEvent[];
+  stream: StreamEvent[];
   seq: number;
 }
 
+/** A Playwright WebSocket frame payload, stringified and capped. */
+function framePayload(frame: unknown): string {
+  const payload = (frame as { payload?: unknown })?.payload;
+  if (payload === undefined || payload === null) return "";
+  return (typeof payload === "string" ? payload : String(payload)).slice(0, 500);
+}
+
 function bindBuffers(page: Page): Buffers {
-  const buf: Buffers = { network: [], console: [], seq: 0 };
+  const buf: Buffers = { network: [], console: [], stream: [], seq: 0 };
   page.on("console", (msg) => {
     const level = (["log", "info", "warn", "error"] as const).includes(msg.type() as never)
       ? (msg.type() as "log" | "info" | "warn" | "error")
@@ -75,6 +84,15 @@ function bindBuffers(page: Page): Buffers {
       failed: res.status() >= 400,
       resourceType: req.resourceType(),
     });
+    if ((res.headers()["content-type"] ?? "").includes("text/event-stream")) {
+      buf.stream.push({
+        seq: ++buf.seq,
+        stream: "sse",
+        url: req.url().slice(0, 300),
+        direction: "open",
+        at: Date.now(),
+      });
+    }
   });
   page.on("requestfailed", (req) => {
     buf.network.push({
@@ -85,14 +103,47 @@ function bindBuffers(page: Page): Buffers {
       resourceType: req.resourceType(),
     });
   });
+  page.on("websocket", (ws) => {
+    const url = ws.url().slice(0, 300);
+    buf.stream.push({ seq: ++buf.seq, stream: "websocket", url, direction: "open", at: Date.now() });
+    ws.on("framesent", (frame) =>
+      buf.stream.push({
+        seq: ++buf.seq,
+        stream: "websocket",
+        url,
+        direction: "sent",
+        data: framePayload(frame),
+        at: Date.now(),
+      })
+    );
+    ws.on("framereceived", (frame) =>
+      buf.stream.push({
+        seq: ++buf.seq,
+        stream: "websocket",
+        url,
+        direction: "received",
+        data: framePayload(frame),
+        at: Date.now(),
+      })
+    );
+    ws.on("close", () =>
+      buf.stream.push({ seq: ++buf.seq, stream: "websocket", url, direction: "close", at: Date.now() })
+    );
+  });
   return buf;
 }
 
-/** Rescope event-window predicates to "since this step started". */
+/** Rescope event-window predicates to "since this step started" (incl. groups). */
 function scopePredicates(predicates: Predicate[], since: number): Predicate[] {
-  return predicates.map((p) =>
-    p.kind === "network" || p.kind === "console-clean" ? { ...p, since } : p
-  );
+  return predicates.map((p) => {
+    if (p.kind === "allOf" || p.kind === "anyOf") {
+      return { ...p, predicates: scopePredicates(p.predicates, since) };
+    }
+    if (p.kind === "network" || p.kind === "console-clean" || p.kind === "stream" || p.kind === "signal") {
+      return { ...p, since };
+    }
+    return p;
+  });
 }
 
 /**

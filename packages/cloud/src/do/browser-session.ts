@@ -21,6 +21,7 @@ import {
   type FlowStep,
   type NetworkEvent,
   type PredicateResult,
+  type StreamEvent,
   ActBatchRequestSchema,
   AssertRequestSchema,
   ActionSchema,
@@ -56,6 +57,13 @@ const json = (data: unknown, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 
+/** A Playwright WebSocket frame payload, stringified and capped. */
+function framePayload(frame: unknown): string {
+  const payload = (frame as { payload?: unknown })?.payload;
+  if (payload === undefined || payload === null) return "";
+  return (typeof payload === "string" ? payload : String(payload)).slice(0, 500);
+}
+
 export class BrowserSession extends DurableObject<Env> {
   private browser?: Browser;
   private page?: Page;
@@ -65,6 +73,7 @@ export class BrowserSession extends DurableObject<Env> {
   private seq = 0;
   private netBuf: NetworkEvent[] = [];
   private conBuf: ConsoleEvent[] = [];
+  private streamBuf: StreamEvent[] = [];
   private pendingStarts = new Map<string, number>(); // request url+seq → start ts
 
   async fetch(request: Request): Promise<Response> {
@@ -300,6 +309,44 @@ export class BrowserSession extends DurableObject<Env> {
         failed: res.status() >= 400,
         resourceType: req.resourceType(),
       });
+      // Server-Sent Events never "finish" as a request/response pair, so the
+      // connection itself is the observable event.
+      if ((res.headers()["content-type"] ?? "").includes("text/event-stream")) {
+        this.pushStream({
+          seq: ++this.seq,
+          stream: "sse",
+          url: req.url().slice(0, 300),
+          direction: "open",
+          at: Date.now(),
+        });
+      }
+    });
+    page.on("websocket", (ws) => {
+      const url = ws.url().slice(0, 300);
+      this.pushStream({ seq: ++this.seq, stream: "websocket", url, direction: "open", at: Date.now() });
+      ws.on("framesent", (frame) =>
+        this.pushStream({
+          seq: ++this.seq,
+          stream: "websocket",
+          url,
+          direction: "sent",
+          data: framePayload(frame),
+          at: Date.now(),
+        })
+      );
+      ws.on("framereceived", (frame) =>
+        this.pushStream({
+          seq: ++this.seq,
+          stream: "websocket",
+          url,
+          direction: "received",
+          data: framePayload(frame),
+          at: Date.now(),
+        })
+      );
+      ws.on("close", () =>
+        this.pushStream({ seq: ++this.seq, stream: "websocket", url, direction: "close", at: Date.now() })
+      );
     });
     page.on("requestfailed", (req) => {
       this.pushNet({
@@ -319,6 +366,10 @@ export class BrowserSession extends DurableObject<Env> {
   private pushConsole(e: ConsoleEvent) {
     this.conBuf.push(e);
     if (this.conBuf.length > RING_BUFFER_LIMIT) this.conBuf.shift();
+  }
+  private pushStream(e: StreamEvent) {
+    this.streamBuf.push(e);
+    if (this.streamBuf.length > RING_BUFFER_LIMIT) this.streamBuf.shift();
   }
 
   /** Best-effort quiesce: wait for network idle but never hang. */
@@ -608,6 +659,9 @@ export class BrowserSession extends DurableObject<Env> {
       console: req.what.includes("console")
         ? this.conBuf.filter((e) => e.seq > req.since)
         : [],
+      stream: req.what.includes("stream")
+        ? this.streamBuf.filter((e) => e.seq > req.since)
+        : [],
       route: req.what.includes("route")
         ? { url: page.url(), title: await page.title().catch(() => "") }
         : undefined,
@@ -622,7 +676,7 @@ export class BrowserSession extends DurableObject<Env> {
     const req = AssertRequestSchema.parse(await request.json());
     const page = await this.ensurePage();
 
-    const buffers = { network: this.netBuf, console: this.conBuf };
+    const buffers = { network: this.netBuf, console: this.conBuf, stream: this.streamBuf };
     const results: PredicateResult[] = [];
     for (const p of req.predicates) {
       results.push(await evalPredicate(page, buffers, p));

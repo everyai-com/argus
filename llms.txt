@@ -19,8 +19,11 @@ client (Claude Code, Codex, Cursor, VS Code/Copilot, Gemini CLI, Windsurf, Cline
 - **Evidence tiers:** signal > consequence (network/route/state/storage) > dom > visual. A verdict reports the
   **weakest tier** it rests on — never upgraded. Missing evidence is `coverage: partial`, never a
   quiet pass. Unresolvable anchors are errors, never guesses.
-- **Predicates** cover `network`, `console-clean`, `route`, `storage`, `visible`/`hidden`/`text`,
-  `signal` and `state`, and compose recursively with `allOf` / `anyOf`.
+- **Predicates** cover `network`, `console-clean`, `route`, `stream`, `storage`,
+  `visible`/`hidden`/`text`, `signal` and `state`, and compose recursively with `allOf` / `anyOf`.
+- **Observation:** requests/responses, console, route, **WebSocket frames and SSE connections**,
+  plus (with the optional `@argus/sdk`) app signals, store state, browser storage and a
+  **React commit stream** (`react:commit` / `react:storm`).
 
 ## How it is used
 
@@ -52,11 +55,10 @@ moves the app and proves nothing.
 
 - **No source `file:line` mapping.** Findings carry an optional `whereInSource`, but Argus does not
   walk React fibers back to source; there are no Babel/Next/Vite instrumentation plugins.
-- **No state-library adapters.** `@argus/sdk` offers a generic `registerStore()` + `signal()`; TanStack
-  Query, Jotai, XState, Valtio, MobX, Recoil, Svelte stores and Pinia have no shipped adapter.
-- **No React commit stream / render-storm detection.**
-- **No WebSocket/SSE frame observation.** The network ring buffer holds request/response events.
+- **Partial state adapters.** Duck-typed helpers ship for zustand/Redux, Svelte, Pinia and TanStack
+  Query; Jotai, XState, Valtio, MobX and Recoil go through the generic `registerStore()`.
 - **No desktop (Electron/Tauri) capture.**
+- **No HITL annotate HUD.**
 
 ## Links
 

@@ -49,4 +49,55 @@ export function isArgusActive(): boolean {
   return runtime() !== undefined;
 }
 
+// ---------------------------------------------------------------------------
+// State adapters — the common store libraries, duck-typed.
+//
+// None of these import the library: each takes the shape it actually needs, so
+// adopting an adapter is one line and there is no version coupling. Anything
+// not listed here still works via `registerStore(name, () => …)`.
+// ---------------------------------------------------------------------------
+
+/** zustand, Redux, or anything exposing `getState()`. */
+export function registerObservableStore<T>(
+  name: string,
+  store: { getState(): T }
+): void {
+  registerStore(name, () => store.getState());
+}
+
+/** Svelte stores: `subscribe` yields the current value immediately. */
+export function registerSvelteStore(
+  name: string,
+  store: { subscribe(listener: (value: unknown) => void): unknown }
+): void {
+  let value: unknown;
+  store.subscribe((next) => {
+    value = next;
+  });
+  registerStore(name, () => value);
+}
+
+/** Pinia stores expose a reactive `$state` object directly. */
+export function registerPiniaStore(name: string, store: { $state: unknown }): void {
+  registerStore(name, () => store.$state);
+}
+
+/** TanStack Query: the whole cache, keyed by query hash, so a stale cache is visible. */
+export function registerQueryClient(
+  name: string,
+  client: {
+    getQueryCache(): {
+      getAll(): Array<{ queryHash: string; state: { data?: unknown } }>;
+    };
+  }
+): void {
+  registerStore(name, () => {
+    const cache: Record<string, unknown> = {};
+    for (const query of client.getQueryCache().getAll()) {
+      cache[query.queryHash] = query.state.data;
+    }
+    return cache;
+  });
+}
+
 export type { ArgusGlobal };

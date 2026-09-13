@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Predicate } from "@argus/shared";
-import { evalPredicate, levenshtein, nearestMatch, weakestTier } from "./verify";
+import { evalPredicate, levenshtein, nearestMatch, weakestTier, type EventBuffers } from "./verify";
 
 const buffers = {
   network: [
@@ -82,6 +82,58 @@ describe("predicate combinators", () => {
       predicates: [{ kind: "anyOf", predicates: [offRoute, order] }, onRoute],
     });
     expect(nested.pass).toBe(true);
+  });
+});
+
+describe("stream predicate", () => {
+  const withStream: EventBuffers = {
+    ...buffers,
+    stream: [
+      {
+        seq: 2,
+        stream: "websocket",
+        url: "wss://x/socket",
+        direction: "received",
+        data: '{"ok":true}',
+        at: 1,
+      },
+      { seq: 3, stream: "sse", url: "https://x/events", direction: "open", at: 2 },
+    ],
+  };
+
+  it("matches a WebSocket frame including its payload", async () => {
+    const r = await evalPredicate(page, withStream, {
+      kind: "stream",
+      urlIncludes: "wss://x/socket",
+      direction: "received",
+      dataIncludes: '"ok"',
+      minCount: 1,
+      since: 0,
+    });
+    expect(r.pass).toBe(true);
+    expect(r.tier).toBe("consequence");
+  });
+
+  it("enforces cardinality and says what it saw on failure", async () => {
+    const r = await evalPredicate(page, withStream, {
+      kind: "stream",
+      urlIncludes: "wss://x/socket",
+      direction: "sent",
+      minCount: 1,
+      since: 0,
+    });
+    expect(r.pass).toBe(false);
+    expect(r.evidence).toContain("stream event(s)");
+  });
+
+  it("does not crash when a session never observed a stream", async () => {
+    const r = await evalPredicate(page, buffers, {
+      kind: "stream",
+      urlIncludes: "/socket",
+      minCount: 1,
+      since: 0,
+    });
+    expect(r.pass).toBe(false);
   });
 });
 

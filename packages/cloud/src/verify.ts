@@ -12,6 +12,7 @@ import type {
   Predicate,
   PredicateResult,
   EvidenceTier,
+  StreamEvent,
 } from "@argus/shared";
 
 /** Resolution ladder: testid → role+name → text → css. */
@@ -35,6 +36,8 @@ export function resolveAnchor(
 export interface EventBuffers {
   network: NetworkEvent[];
   console: ConsoleEvent[];
+  /** Optional: sessions that never observed a stream simply have none. */
+  stream?: StreamEvent[];
 }
 
 export async function evalPredicate(
@@ -125,6 +128,29 @@ export async function evalPredicate(
         pass: url.includes(p.includes),
         tier: "consequence",
         evidence: `route is ${url}`,
+      };
+    }
+    case "stream": {
+      const events = (buffers.stream ?? []).filter(
+        (e) =>
+          e.seq > p.since &&
+          e.url.includes(p.urlIncludes) &&
+          (!p.stream || e.stream === p.stream) &&
+          (!p.direction || e.direction === p.direction) &&
+          (!p.dataIncludes || (e.data ?? "").includes(p.dataIncludes))
+      );
+      const countOk =
+        events.length >= p.minCount &&
+        (p.maxCount === undefined || events.length <= p.maxCount);
+      const saw = events.slice(-2).map((e) => `${e.stream}/${e.direction}`).join(", ");
+      return {
+        pass: countOk,
+        tier: "consequence",
+        evidence: `${events.length} stream event(s) for "${p.urlIncludes}"${
+          p.direction ? ` direction=${p.direction}` : ""
+        } (wanted ≥${p.minCount}${p.maxCount !== undefined ? `, ≤${p.maxCount}` : ""})${
+          !countOk && saw ? ` — saw: ${saw}` : ""
+        }`,
       };
     }
     case "visible":

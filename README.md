@@ -315,6 +315,13 @@ Measured on the demo's `?bug=silent500` (UI renders the task, the POST 500s):
 | State — is it in the store? | ✅ pass — optimistic update, **also fooled** |
 | **Signal — did the app declare success?** | ❌ **fail — the only tier that caught it** |
 
+The SDK also ships duck-typed **state adapters** — `registerObservableStore`
+(zustand / Redux), `registerSvelteStore`, `registerPiniaStore`, and
+`registerQueryClient` (TanStack Query, exposing the whole cache) — plus a
+**React commit stream**: a render storm is recorded as a `react:storm` signal, so
+`{ "kind": "signal", "name": "react:storm", "maxCount": 0 }` fails the flow when
+the UI melts down.
+
 ## Fleet view
 
 Runs are tagged with the project directory name, and the dashboard's **Fleet**

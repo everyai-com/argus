@@ -28,6 +28,7 @@ export const ARGUS_RUNTIME = /* js */ `
   var MAX = 500;
   var signals = [];
   var stores = {};
+  var totalCommits = 0;
   window.__argus = {
     version: 1,
     signals: signals,
@@ -53,9 +54,51 @@ export const ARGUS_RUNTIME = /* js */ `
     },
     /** What this app advertises as testable — a fresh agent can read this. */
     capabilities: function () {
-      return { stores: Object.keys(stores), signalsSeen: signals.map(function (s) { return s.name; }).filter(function (v, i, a) { return a.indexOf(v) === i; }) };
+      return { stores: Object.keys(stores), signalsSeen: signals.map(function (s) { return s.name; }).filter(function (v, i, a) { return a.indexOf(v) === i; }), reactCommits: totalCommits };
     },
   };
+
+  // --- React commit stream (dev only) ---------------------------------------
+  // React calls onCommitFiberRoot on every commit whenever a devtools hook is
+  // present. We install a minimal stub so the hook exists before React loads,
+  // then record commits — coalesced into 250ms buckets — so a render storm is
+  // visible as react:storm instead of flooding the signal buffer one per render.
+  var pendingCommits = 0;
+  var flush = null;
+  var STORM_THRESHOLD = 25; // commits per 250ms window (~100/s) is a storm
+  function recordCommit() {
+    totalCommits++;
+    pendingCommits++;
+    if (flush) return;
+    flush = setTimeout(function () {
+      var n = pendingCommits;
+      pendingCommits = 0;
+      flush = null;
+      try {
+        window.__argus.signal('react:commit', { count: n });
+        if (n >= STORM_THRESHOLD) window.__argus.signal('react:storm', { count: n });
+      } catch (e) {}
+    }, 250);
+  }
+  try {
+    var hook = window.__REACT_DEVTOOLS_GLOBAL_HOOK__;
+    if (!hook) {
+      hook = {
+        supportsFiber: true,
+        renderers: new Map(),
+        inject: function () {},
+        onCommitFiberRoot: function () {},
+        onCommitFiberUnmount: function () {},
+        onPostCommitFiberRoot: function () {},
+      };
+      window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = hook;
+    }
+    var previousOnCommit = hook.onCommitFiberRoot;
+    hook.onCommitFiberRoot = function () {
+      recordCommit();
+      if (typeof previousOnCommit === 'function') return previousOnCommit.apply(this, arguments);
+    };
+  } catch (e) {}
 })();
 `;
 

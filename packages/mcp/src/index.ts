@@ -220,11 +220,11 @@ registerTool(
 
 registerTool(
   "argus_observe",
-  "Read what happened: network requests, console messages, current route — from the session's ring buffers. Pass the previous cursor to get only new events.",
+  "Read what happened: network requests, console messages, stream events (WebSocket frames / SSE connections) and the current route — from the session's ring buffers. Pass the previous cursor to get only new events.",
   {
     sessionId: z.string(),
     since: z.number().int().optional(),
-    what: z.array(z.enum(["network", "console", "route"])).optional(),
+    what: z.array(z.enum(["network", "console", "route", "stream"])).optional(),
   },
   async ({ sessionId, ...rest }) =>
     jsonResult(await api("POST", `/v1/session/${sessionId}/observe`, rest))

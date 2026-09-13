@@ -22,6 +22,9 @@ packages.
 | App signals and state | `@argus/sdk` (`signal()`, `registerStore()`) | Native Argus protocol |
 | Composable predicates | `allOf` / `anyOf` in `argus_assert` and flows | Native |
 | Browser storage observation | `storage` predicate (localStorage / sessionStorage) | Native |
+| Streaming observation | WebSocket frames + SSE connections (`stream` predicate, `argus_observe`) | Native |
+| React commit stream | `react:commit` / `react:storm` signals from the SDK runtime | Native |
+| State-library adapters | zustand/Redux, Svelte, Pinia, TanStack Query (duck-typed); others via `registerStore` | Partial |
 | Install as a skill | `SKILL.md`, `skills/*/SKILL.md`, `.claude-plugin/` | Native |
 | Docs for agents | `llms.txt` | Native |
 
@@ -40,12 +43,9 @@ Honest gaps against Reticle today — tracked, not hidden:
 | Reticle capability | Argus status | Notes |
 |---|---|---|
 | Source **`file:line`** in a verdict | Missing | `Finding.decision.whereInSource` exists but nothing populates it — no React-fiber→source walk, no source maps |
-| **React commit stream** / render-storm detection | Missing | `argus_observe` reads network, console and route only |
-| **State-library adapters** (TanStack Query, Jotai, XState, Valtio, MobX, Recoil, Svelte stores, Pinia) | Missing | Only the generic `registerStore()` + `signal()` push API ships |
-| **WebSocket / SSE frame** observation | Missing | The network ring buffer holds request/response events |
 | **Meta-tool** to cap the surface (`reticle_tools` / `reticle_run`) | Partial | `argus_tools` adds a catalog + verdict flags; the advertised surface is not yet subset-by-default |
 | One-command **npm install** of the MCP server | Missing | `@argus/cli` / `@argus/mcp` are not published; `argus init` runs from a checkout |
-| Redis/TanStack-style **stale-cache** detection | Missing | No cache-adapter reads |
+| Automatic **stale-cache** oracle | Partial | The TanStack cache is exposed via `registerQueryClient`; asserting staleness is still a hand-written predicate |
 | **HITL annotate** HUD (click an element, send a note) | Missing | Dashboard is read-only over runs |
 
 `argus verify <url>` is the automatic project-level gate: smoke checks, the
