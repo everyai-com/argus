@@ -6,12 +6,12 @@
  * (user / session / account / verification); the tenant registry stays in the
  * Coordinator DO, so one account maps to exactly one tenant.
  *
- * Migrations run lazily, once per isolate: a Worker has no deploy step that can
- * run the better-auth CLI, and an empty D1 would otherwise 500 every auth call.
- * Concurrent isolates are tolerated — "table already exists" is success.
+ * Migrations are applied out-of-band: `wrangler d1 execute argus-accounts
+ * --remote --file=migrations/0001_auth.sql`. They are NOT run at runtime —
+ * Kysely's migration introspection uses PRAGMA statements that D1 rejects with
+ * SQLITE_AUTH, which would 500 every auth request.
  */
 import { betterAuth, type BetterAuthOptions } from "better-auth";
-import { getMigrations } from "better-auth/db/migration";
 import { Kysely } from "kysely";
 import { D1Dialect } from "kysely-d1";
 import type { Env } from "./env";
@@ -36,17 +36,4 @@ export function authOptions(env: Env, origin: string): BetterAuthOptions {
 
 export function createAuth(env: Env, origin: string) {
   return betterAuth(authOptions(env, origin));
-}
-
-let ready: Promise<void> | null = null;
-
-export function ensureAuthSchema(env: Env, origin: string): Promise<void> {
-  if (!ready) {
-    ready = getMigrations(authOptions(env, origin))
-      .then(({ runMigrations }) => runMigrations())
-      .catch((error: unknown) => {
-        if (!/already exists/i.test(String(error))) throw error;
-      });
-  }
-  return ready;
 }

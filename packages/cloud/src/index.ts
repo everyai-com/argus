@@ -31,7 +31,7 @@ import { handleGitHubEvent, verifyGitHubWebhook } from "./github-app";
 import { renderEvidencePage, serveEvidenceArtifact, verifyEvidenceSignature } from "./evidence";
 import { handleMcp } from "./mcp";
 import { deleteFlow, getFlow, listFlows, putFlow } from "./flows-store";
-import { createAuth, ensureAuthSchema } from "./auth";
+import { createAuth } from "./auth";
 
 const ADMIN_TENANT = "_admin";
 
@@ -157,8 +157,12 @@ app.on(["POST", "GET"], "/api/auth/*", async (c) => {
     );
   }
   const origin = new URL(c.req.url).origin;
-  await ensureAuthSchema(c.env, origin);
-  return createAuth(c.env, origin).handler(c.req.raw);
+  try {
+    return await createAuth(c.env, origin).handler(c.req.raw);
+  } catch (err) {
+    // Never 500 the dashboard: a broken auth layer degrades to "accounts off".
+    return c.json({ error: "auth_unavailable", detail: String(err).slice(0, 200) }, 503);
+  }
 });
 
 app.post("/api/mcp-token", async (c) => {
@@ -169,10 +173,15 @@ app.post("/api/mcp-token", async (c) => {
     );
   }
   const origin = new URL(c.req.url).origin;
-  await ensureAuthSchema(c.env, origin);
-  const session = await createAuth(c.env, origin).api.getSession({
-    headers: c.req.raw.headers,
-  });
+  let auth: ReturnType<typeof createAuth>;
+  try {
+    auth = createAuth(c.env, origin);
+  } catch (err) {
+    return c.json({ error: "auth_unavailable", detail: String(err).slice(0, 200) }, 503);
+  }
+  const session = await auth.api
+    .getSession({ headers: c.req.raw.headers })
+    .catch(() => null);
   if (!session) return c.json({ error: "unauthorized" }, 401);
 
   const tenantId = `u_${session.user.id.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 16) || "user"}`;
