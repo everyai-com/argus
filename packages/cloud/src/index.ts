@@ -29,6 +29,8 @@ import { runAudit } from "./audit";
 import { replayFlow, verifyFlows } from "./flows";
 import { handleGitHubEvent, verifyGitHubWebhook } from "./github-app";
 import { renderEvidencePage, serveEvidenceArtifact, verifyEvidenceSignature } from "./evidence";
+import { handleMcp } from "./mcp";
+import { deleteFlow, getFlow, listFlows, putFlow } from "./flows-store";
 
 const ADMIN_TENANT = "_admin";
 
@@ -122,6 +124,24 @@ function requireAdmin(c: { get: (k: "tenant") => ResolvedTenant; json: (b: unkno
 }
 
 app.get("/health", (c) => c.json({ ok: true, service: "argus-cloud" }));
+
+// --- remote MCP -------------------------------------------------------------
+// The service half of the product: an agent adds this URL to its MCP config and
+// gets the whole tool surface with no checkout. Auth is the same bearer token as
+// /v1; tools dispatch to the app in-process, so there is one implementation.
+app.all("/mcp", async (c) => {
+  const header = c.req.header("authorization") ?? "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : "";
+  const tenant = await resolveTenant(c.env, token);
+  if (!tenant) return c.json({ error: "unauthorized" }, 401);
+  return handleMcp(c.req.raw, {
+    env: c.env,
+    tenantId: tenant.id,
+    origin: new URL(c.req.url).origin,
+    token,
+    dispatch: async (request) => app.fetch(request, c.env),
+  });
+});
 
 // --- GitHub platform -------------------------------------------------------
 // This surface is intentionally outside /v1: it authenticates with GitHub's
@@ -521,6 +541,32 @@ app.delete("/v1/admin/tenant/:id", async (c) => {
     body: JSON.stringify({ id: c.req.param("id") }),
   });
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// --- flows stored server-side (per tenant) ----------------------------------
+// The remote MCP surface keeps flows here instead of on a laptop. The repo copy
+// stays for review; the GitHub App reads the committed files at the head SHA.
+
+app.get("/v1/flows", async (c) =>
+  c.json({ flows: await listFlows(c.env, c.get("tenant").id) })
+);
+
+app.get("/v1/flows/:name", async (c) => {
+  const flow = await getFlow(c.env, c.get("tenant").id, c.req.param("name"));
+  return flow ? c.json(flow) : c.json({ error: "not_found" }, 404);
+});
+
+app.put("/v1/flows/:name", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = FlowSchema.safeParse({ version: 1, ...body, name: c.req.param("name") });
+  if (!parsed.success) return c.json({ error: "bad_request", detail: parsed.error.message }, 400);
+  await putFlow(c.env, c.get("tenant").id, parsed.data);
+  return c.json({ saved: parsed.data.name, steps: parsed.data.steps.length });
+});
+
+app.delete("/v1/flows/:name", async (c) => {
+  const removed = await deleteFlow(c.env, c.get("tenant").id, c.req.param("name"));
+  return removed ? c.json({ ok: true }) : c.json({ error: "not_found" }, 404);
 });
 
 // --- artifacts (screenshots, reports) ---------------------------------------

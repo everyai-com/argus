@@ -1,20 +1,23 @@
 # Harness support
 
-Argus ships **one** MCP server (`packages/mcp`) over plain stdio. It works with
-any MCP client — a harness only changes *where* you register it and *which* file
-it reads for standing instructions. `packages/cli/src/harness.ts` is the single
-source of truth for that wiring; `argus init` drives it.
+Argus ships **two** MCP servers over the same tool surface: a **remote**
+streamable-HTTP endpoint on the Worker at `<origin>/mcp` (recommended — connect by
+URL, no checkout; flows live server-side per tenant), and a **local stdio** server
+(`packages/mcp`) for harnesses that want a local process or repo-committed flows.
+`packages/cli/src/harness.ts` is the single source of truth for the stdio wiring;
+`argus init` drives it.
 
 ## Matrix
 
 | Harness | MCP config file | Config shape | Instruction file | Auto-wired by `argus init` |
 |---|---|---|---|---|
+| **Any remote MCP client** | harness-specific | `{"type":"http","url":"<origin>/mcp","headers":{"Authorization":"Bearer <token>"}}` | `AGENTS.md` (the agent writes it) | connect by URL — nothing to wire |
 | Claude Code | `.mcp.json` (project) | `mcpServers` | `CLAUDE.md` | always |
 | Cursor | `.cursor/mcp.json` | `mcpServers` | `.cursor/rules/argus.mdc` | when `.cursor/` exists, or `--harness all` |
 | VS Code / Copilot | `.vscode/mcp.json` | `servers` + `type: stdio` | `.github/copilot-instructions.md` | when `.vscode/` exists, or `--harness all` |
 | Codex CLI | `~/.codex/config.toml` (global) | TOML `[mcp_servers.argus]` | `AGENTS.md` | snippet printed; written with `--write-global` |
 | Any `AGENTS.md` reader (Codex, Cursor, Copilot, Gemini CLI, Zed, Amp, Cline, Windsurf) | — | — | `AGENTS.md` | always |
-| Remote MCP clients | provider-specific | `url` / `type: http` | — | not applicable (server is stdio) |
+| Remote MCP clients | provider-specific | `url` / `type: http` | — | this is the canonical deployment shape |
 
 `argus init <api-url> <token> [--harness claude,cursor,vscode,agents,codex|all] [--write-global]`
 

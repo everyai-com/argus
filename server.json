@@ -1,0 +1,17 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.everyai-com/argus",
+  "description": "Cloud verification for AI coding agents: drive a real cloud browser, read network/console/route/stream/storage truth, and get evidence-graded verdicts with deterministic flow replay.",
+  "repository": {
+    "url": "https://github.com/everyai-com/argus",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "websiteUrl": "https://argus-cloud.everyai-com.workers.dev",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://argus-cloud.everyai-com.workers.dev/mcp"
+    }
+  ]
+}

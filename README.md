@@ -12,8 +12,9 @@ verify-or-refuse ideas — rebuilt cloud-native, zero-install, with the AI brain
 running on your **existing coding agent** — Claude Code, Codex, Cursor, VS Code,
 or anything that speaks MCP (no API key anywhere).
 
-> **Start here:** paste [`START.md`](START.md) to your coding agent. It wires itself into the project
-> and drives the app to a verdict — one link, one question (your Argus token).
+> **Start here:** paste [`START.md`](START.md) to your coding agent. Argus is a **remote MCP service** —
+> the agent connects to `https://<your-argus>/mcp` with your token and drives the app to a verdict.
+> One link, one question. No clone, no install.
 
 ## What it does
 
@@ -121,10 +122,16 @@ the one piece of Reticle's install story Argus does not have.
 
 ### Install in your harness
 
-Argus ships one stdio MCP server that works with any MCP client — the harness
-only changes *where* you register it. `argus init <api-url> <token>` wires the
-server into Claude Code and every project harness it detects; add `--harness all`
-to write them all, or `--write-global` to also update the global Codex config.
+**Remote (recommended).** The Worker serves the same tool surface at
+`https://<your-argus>/mcp` (streamable HTTP). Point any MCP client at that URL
+with your bearer token and there is nothing to install; flows are stored
+server-side per tenant. See [`START.md`](START.md) and [`server.json`](server.json).
+
+**Local stdio (fallback).** Argus also ships a stdio MCP server for harnesses
+that prefer a local process or want flows committed to the repo. The harness only
+changes *where* you register it — `argus init <api-url> <token>` wires it into
+Claude Code and every project harness it detects; add `--harness all` to write
+them all, or `--write-global` to also update the global Codex config.
 
 **Claude Code** — `.mcp.json` (written by `argus init`):
 

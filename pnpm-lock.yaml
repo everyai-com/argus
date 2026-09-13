@@ -63,6 +63,9 @@ importers:
       '@cloudflare/playwright':
         specifier: ^1.3.5
         version: 1.3.5
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.30.0
+        version: 1.30.0(zod@3.25.76)
       hono:
         specifier: ^4.6.0
         version: 4.13.1

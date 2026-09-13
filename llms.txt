@@ -27,15 +27,17 @@ client (Claude Code, Codex, Cursor, VS Code/Copilot, Gemini CLI, Windsurf, Cline
 
 ## How it is used
 
-1. **Agent, in-session.** `argus init <api-url> <token>` wires the MCP server into the detected
-   harnesses and writes standing verification steps into `AGENTS.md` / `CLAUDE.md`. The
-   `argus-explore` skill drives discovery; `verify-change` re-verifies after edits.
-2. **CI / GitHub.** Install the GitHub App and commit `.argus/platform.json`; every pull request (or
+1. **Agent, remote MCP (the default).** Add `<origin>/mcp` (streamable HTTP) to the harness's MCP
+   config with a bearer token — no checkout, no local process. Flows are stored server-side per
+   tenant. The `argus-explore` and `verify-until-green` skills drive discovery and the fix loop.
+2. **Agent, local stdio (fallback).** `argus init <api-url> <token>` wires a stdio MCP server into
+   the detected harnesses and writes standing verification steps into `AGENTS.md` / `CLAUDE.md`.
+3. **CI / GitHub.** Install the GitHub App and commit `.argus/platform.json`; every pull request (or
    preview deployment) runs the selected suites and posts an **Argus Verification** Check Run with a
    verdict, findings, and a 24-hour signed evidence page.
-3. **CLI / deploy gate.** `argus verify <url>` runs smoke + audit + every saved flow, exiting non-zero
+4. **CLI / deploy gate.** `argus verify <url>` runs smoke + audit + every saved flow, exiting non-zero
    on failure. `argus gate --upload` verifies a Worker version before it takes traffic.
-4. **Any MCP client.** The server returns its lifecycle as `instructions` on initialize, so a client
+5. **Any MCP client.** The server returns its lifecycle as `instructions` on initialize, so a client
    that surfaces them needs no instruction file at all.
 
 ## Tools (24, `argus_*`)
@@ -64,6 +66,7 @@ moves the app and proves nothing.
 
 - Repository: https://github.com/everyai-com/argus
 - **Start here (paste to an agent):** https://raw.githubusercontent.com/everyai-com/argus/main/START.md
+- **Remote MCP endpoint:** `https://<your-argus>/mcp` (streamable HTTP, bearer token) — `server.json`
 - Harness matrix: `docs/harness-support.md`
 - Setup brief + error catalogue: `docs/agent-setup-prompt.md`
 - Skill / critical path: `SKILL.md`

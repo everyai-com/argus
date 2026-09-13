@@ -18,6 +18,27 @@ function env(overrides: Record<string, unknown> = {}) {
   } as never;
 }
 
+function memoryArtifacts() {
+  const store = new Map<string, string>();
+  return {
+    get: vi.fn(async (key: string) =>
+      store.has(key)
+        ? { json: async () => JSON.parse(store.get(key)!), text: async () => store.get(key)! }
+        : null
+    ),
+    put: vi.fn(async (key: string, value: string) => {
+      store.set(key, value);
+    }),
+    delete: vi.fn(async (key: string) => {
+      store.delete(key);
+    }),
+    head: vi.fn(async (key: string) => (store.has(key) ? { key } : null)),
+    list: vi.fn(async ({ prefix }: { prefix: string }) => ({
+      objects: [...store.keys()].filter((k) => k.startsWith(prefix)).map((k) => ({ key: k })),
+    })),
+  };
+}
+
 describe("worker API boundary", () => {
   it("keeps health public while every v1 route fails closed", async () => {
     expect((await app.request("https://argus.test/health", {}, env())).status).toBe(200);
@@ -167,5 +188,107 @@ describe("worker API boundary", () => {
     );
     expect(allowed.status).toBe(200);
     expect(await allowed.text()).toBe("image");
+  });
+});
+
+describe("remote MCP endpoint", () => {
+  const rpcHeaders = {
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream",
+  };
+  const rpc = (id: number, method: string, params: unknown = {}) =>
+    JSON.stringify({ jsonrpc: "2.0", id, method, params });
+
+  it("refuses an unauthenticated connection", async () => {
+    const res = await app.request(
+      "https://argus.test/mcp",
+      {
+        method: "POST",
+        headers: rpcHeaders,
+        body: rpc(1, "initialize", {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "test", version: "1" },
+        }),
+      },
+      env()
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("initializes and serves the whole tool surface", async () => {
+    const e = env({ ARTIFACTS: memoryArtifacts() });
+    const headers = { authorization: "Bearer admin-secret", ...rpcHeaders };
+
+    const init = await app.request(
+      "https://argus.test/mcp",
+      {
+        method: "POST",
+        headers,
+        body: rpc(1, "initialize", {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "test", version: "1" },
+        }),
+      },
+      e
+    );
+    expect(init.status).toBe(200);
+    const initBody = (await init.json()) as { result: { serverInfo: { name: string } } };
+    expect(initBody.result.serverInfo.name).toBe("argus");
+
+    const tools = await app.request(
+      "https://argus.test/mcp",
+      { method: "POST", headers, body: rpc(2, "tools/list") },
+      e
+    );
+    const toolsBody = (await tools.json()) as { result: { tools: Array<{ name: string }> } };
+    const names = toolsBody.result.tools.map((t) => t.name);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "argus_lease",
+        "argus_assert",
+        "argus_observe",
+        "argus_flow_save",
+        "argus_flow_verify",
+        "argus_tools",
+      ])
+    );
+  });
+});
+
+describe("server-side flows", () => {
+  it("saves, lists, reads and deletes a tenant's flows", async () => {
+    const e = env({ ARTIFACTS: memoryArtifacts() });
+    const headers = { authorization: "Bearer admin-secret", "content-type": "application/json" };
+    const flow = {
+      version: 1,
+      name: "loads",
+      startUrl: "https://example.com",
+      steps: [{ action: { action: "wait", ms: 50 } }],
+      success: [{ kind: "console-clean" }],
+    };
+
+    const put = await app.request(
+      "https://argus.test/v1/flows/loads",
+      { method: "PUT", headers, body: JSON.stringify(flow) },
+      e
+    );
+    expect(put.status).toBe(200);
+
+    const list = await app.request("https://argus.test/v1/flows", { headers }, e);
+    const listBody = (await list.json()) as { flows: Array<{ name: string }> };
+    expect(listBody.flows.map((f) => f.name)).toEqual(["loads"]);
+
+    const one = await app.request("https://argus.test/v1/flows/loads", { headers }, e);
+    expect(one.status).toBe(200);
+
+    const del = await app.request(
+      "https://argus.test/v1/flows/loads",
+      { method: "DELETE", headers },
+      e
+    );
+    expect(del.status).toBe(200);
+    expect((await app.request("https://argus.test/v1/flows/loads", { headers }, e)).status).toBe(404);
   });
 });
