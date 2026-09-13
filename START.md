@@ -19,6 +19,9 @@ to a URL and get `argus_*` tools. Your job is to take this project to a **verdic
 
 - The URL is their Argus deployment + `/mcp` (e.g. `https://argus-cloud.<account>.workers.dev/mcp`).
 - The token is their Argus tenant token (starts with `argus_` or is the admin token).
+- **No token yet?** Tell the human to open their Argus URL, click the **Account** tab, sign up
+  (email + password) and press **Create MCP token** — it shows the token once with the exact config
+  to paste. Then continue here.
 
 If they don't have one, see "Deploy an Argus once" at the bottom (needs a paid Cloudflare Workers plan).
 
