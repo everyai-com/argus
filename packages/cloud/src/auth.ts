@@ -12,16 +12,17 @@
  * SQLITE_AUTH, which would 500 every auth request.
  */
 import { betterAuth, type BetterAuthOptions } from "better-auth";
-import { Kysely } from "kysely";
-import { D1Dialect } from "kysely-d1";
+import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { drizzle } from "drizzle-orm/d1";
+import * as schema from "./auth-schema";
 import type { Env } from "./env";
 
 export function authOptions(env: Env, origin: string): BetterAuthOptions {
-  const db = new Kysely<Record<string, unknown>>({
-    dialect: new D1Dialect({ database: env.DB }),
-  });
   return {
-    database: { db, type: "sqlite" },
+    database: drizzleAdapter(drizzle(env.DB, { schema }), {
+      provider: "sqlite",
+      schema: { user: schema.user, session: schema.session, account: schema.account, verification: schema.verification },
+    }),
     secret: env.BETTER_AUTH_SECRET ?? "",
     baseURL: env.BETTER_AUTH_URL ?? env.ARGUS_PUBLIC_URL ?? origin,
     basePath: "/api/auth",
