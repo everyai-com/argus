@@ -6,7 +6,7 @@ description: AI exploration mode — the agent maps an app with Argus cloud brow
 # Argus exploration mode
 
 Follow the harness-neutral protocol in
-[`skills/argus-explore.md`](../../../skills/argus-explore.md): recon → lease +
+[`skills/argus-explore/SKILL.md`](../../../skills/argus-explore/SKILL.md): recon → lease +
 map → explore in parallel → record → audit → judge screenshots → report.
 
 The short version: `argus_smoke` first; `argus_lease` a session per concurrent

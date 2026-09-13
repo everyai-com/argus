@@ -1,0 +1,63 @@
+# Argus — full context for LLMs
+
+> Argus is a **cloud verification platform** for AI coding agents. It runs real Chromium on Cloudflare
+> (Browser Rendering + Durable Objects) and exposes it as `argus_*` MCP tools: lease a session, drive
+> the app, read **program truth** (network, console, route, app signals, store state), assert with
+> evidence tiers, and save deterministic flows that replay with no model in the loop.
+
+Argus is **self-hosted** — you deploy the Worker to your own Cloudflare account and wire each project
+with `argus init`. There is no hosted signup. The MCP server is plain stdio and works with any MCP
+client (Claude Code, Codex, Cursor, VS Code/Copilot, Gemini CLI, Windsurf, Cline, Zed).
+
+## What it is
+
+- **Interfaces:** an MCP server (`packages/mcp`, stdio), a CLI (`packages/cli`), an HTTPS API on a
+  Cloudflare Worker (`packages/cloud`), and an optional app-side SDK (`packages/sdk`).
+- **Checks:** smoke (load, console/network clean, responsive overflow, screenshots) · flows
+  (recorded, semantically anchored, deterministically replayed) · audit (axe-core a11y, FCP/LCP/CLS,
+  broken links, overflow, pixel-diff visual regression).
+- **Evidence tiers:** signal > consequence (network/route/state) > dom > visual. A verdict reports the
+  **weakest tier** it rests on — never upgraded. Missing evidence is `coverage: partial`, never a
+  quiet pass. Unresolvable anchors are errors, never guesses.
+
+## How it is used
+
+1. **Agent, in-session.** `argus init <api-url> <token>` wires the MCP server into the detected
+   harnesses and writes standing verification steps into `AGENTS.md` / `CLAUDE.md`. The
+   `argus-explore` skill drives discovery; `verify-change` re-verifies after edits.
+2. **CI / GitHub.** Install the GitHub App and commit `.argus/platform.json`; every pull request (or
+   preview deployment) runs the selected suites and posts an **Argus Verification** Check Run with a
+   verdict, findings, and a 24-hour signed evidence page.
+3. **CLI / deploy gate.** `argus verify <url>` runs smoke + audit + every saved flow, exiting non-zero
+   on failure. `argus gate --upload` verifies a Worker version before it takes traffic.
+4. **Any MCP client.** The server returns its lifecycle as `instructions` on initialize, so a client
+   that surfaces them needs no instruction file at all.
+
+## Tools (24, `argus_*`)
+
+Sessions: `argus_lease`, `argus_release`, `argus_sessions`, `argus_auth_save/list/delete`.
+Drive/read: `argus_query`, `argus_act`, `argus_act_batch`, `argus_observe`, `argus_assert`,
+`argus_screenshot`.
+Verify: `argus_smoke`, `argus_audit`, `argus_runs`, `argus_findings`.
+Flows: `argus_record`, `argus_flow_save/list/replay/verify/heal`, `argus_flow_import_reticle`.
+Mail/magic links: `argus_email_link`.
+
+Only `argus_assert` and a flow's `expect` / `success` predicates produce a verdict — `argus_act`
+moves the app and proves nothing.
+
+## What it does not do
+
+- **No source `file:line` mapping.** Findings carry an optional `whereInSource`, but Argus does not
+  walk React fibers back to source; there are no Babel/Next/Vite instrumentation plugins.
+- **No state-library adapters.** `@argus/sdk` offers a generic `registerStore()` + `signal()`; TanStack
+  Query, Jotai, XState, Valtio, MobX, Recoil, Svelte stores and Pinia have no shipped adapter.
+- **No React commit stream / render-storm detection.**
+- **No WebSocket/SSE frame or storage (localStorage/sessionStorage) predicates.**
+- **No desktop (Electron/Tauri) capture.**
+
+## Links
+
+- Repository: https://github.com/everyai-com/argus
+- Harness matrix: `docs/harness-support.md`
+- Skill / critical path: `SKILL.md`
+- GitHub App: `docs/github-app.md` · Reticle compatibility: `docs/reticle-compatibility.md`

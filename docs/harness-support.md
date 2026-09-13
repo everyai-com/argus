@@ -65,7 +65,7 @@ and talltrack:
    that surfaces it needs no file at all. Harnesses that read `AGENTS.md` get the
    fuller standing-verification block.
 3. **Skill** — the exploration protocol is harness-neutral in
-   `skills/argus-explore.md`; Claude Code loads it through the shim at
+   `skills/argus-explore/SKILL.md`; Claude Code loads it through the shim at
    `.claude/skills/argus-explore/SKILL.md`.
 
 ## AGENTS.md

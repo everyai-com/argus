@@ -1,8 +1,9 @@
-# Argus exploration mode
+---
+name: argus-explore
+description: AI exploration mode — the agent maps an app with Argus cloud browsers, discovers user journeys, saves them as replayable flows, and audits UI/UX. Use when asked to "explore and test" an app, generate a test suite for a URL, or verify software end-to-end with Argus.
+---
 
-Harness-neutral protocol. Claude Code loads it through the skill shim at
-`.claude/skills/argus-explore/SKILL.md`; any other harness should follow this
-file directly (it is referenced from `AGENTS.md`).
+# Argus exploration mode
 
 You are the brain; Argus cloud browsers are your hands and eyes. Your goal:
 discover what the app can do, verify each journey with **consequence-tier

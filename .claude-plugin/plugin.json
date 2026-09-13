@@ -1,0 +1,13 @@
+{
+  "name": "argus",
+  "displayName": "Argus",
+  "version": "0.1.0",
+  "description": "Cloud verification for AI coding agents. Drive a real cloud browser, read program truth (network, console, route, app signals and state), and get evidence-graded verdicts with deterministic flow replay.",
+  "author": {
+    "name": "EveryAI",
+    "url": "https://github.com/everyai-com"
+  },
+  "homepage": "https://github.com/everyai-com/argus",
+  "repository": "https://github.com/everyai-com/argus",
+  "keywords": ["mcp", "ai-agents", "testing", "verification", "browser", "cloudflare"]
+}

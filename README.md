@@ -85,6 +85,39 @@ Provider retries for the same commit and preview URL are deduplicated before a
 browser starts. No GitHub or Argus bearer token is committed to the repository
 or placed in an evidence URL. See [the GitHub App setup](docs/github-app.md).
 
+### Install in 30 seconds (agentic)
+
+Argus is self-hosted, so "install" means deploy an Argus API once, then let your
+agent wire each project. Paste this into your coding agent — Claude Code, Codex,
+Cursor, Copilot, Gemini CLI, Windsurf, or any MCP agent:
+
+```text
+Argus is a cloud verification platform. It drives a real cloud browser against my
+app and hands back evidence-graded verdicts — network, console, route, app signals
+and store state — plus deterministic flows that replay with no model in the loop.
+
+Read https://raw.githubusercontent.com/everyai-com/argus/main/SKILL.md and follow its
+SETUP steps exactly. Do not stop until you have driven one real flow in my app and
+produced a verdict. A config file is not an install; a verdict is.
+```
+
+Claude Code — the plugin installs the Argus skills in one step:
+
+```text
+/plugin marketplace add everyai-com/argus
+/plugin install argus@everyai-com
+```
+
+Anywhere the skills CLI reaches (Cursor, Codex, Copilot, Gemini CLI, Windsurf):
+
+```bash
+npx skills add everyai-com/argus
+```
+
+The MCP server itself is registered per project by `argus init` (below). Argus is
+not published to npm yet, so there is no `npx` one-liner for the server — that is
+the one piece of Reticle's install story Argus does not have.
+
 ### Install in your harness
 
 Argus ships one stdio MCP server that works with any MCP client — the harness
@@ -136,7 +169,7 @@ testid/role anchors and network, console, element, and state expectations. See
 boundary between Argus cloud execution and Reticle's framework-specific packages.
 
 Say `/argus-explore <url>` in Claude Code — or run the `argus-explore` protocol
-from [skills/argus-explore.md](skills/argus-explore.md) in any other harness — to
+from [skills/argus-explore/SKILL.md](skills/argus-explore/SKILL.md) in any other harness — to
 have the agent map the app, generate flows, and audit everything in parallel.
 
 ## Flows are your test suite
