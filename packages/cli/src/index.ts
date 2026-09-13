@@ -411,6 +411,127 @@ async function main(): Promise<void> {
       console.log(`\ntry:  ${bold("argus test <your-app-url>")}   or   ${bold("argus test --local <port>")}`);
       break;
     }
+    case "onboard": {
+      // argus onboard <api-url> <token> [--url U | --local PORT] [--harness all]
+      // One command from nothing to a verdict: write config, wire every harness,
+      // tunnel a local app if needed, run smoke + every saved flow, and report.
+      const oH = args.indexOf("--harness");
+      const oU = args.indexOf("--url");
+      const oL = args.indexOf("--local");
+      const valueIdx = new Set([oH + 1, oU + 1, oL + 1]);
+      const positional = args.filter((a, i) => !a.startsWith("-") && !valueIdx.has(i));
+      const [apiUrl, token] = positional;
+      if (!apiUrl || !token) {
+        console.error(
+          "usage: argus onboard <api-url> <token> [--url <app-url> | --local <port>] [--harness all]"
+        );
+        process.exit(2);
+      }
+      const oc = { api: apiUrl.replace(/\/$/, ""), token };
+
+      mkdirSync(join(process.cwd(), ".argus", "flows"), { recursive: true });
+      writeFileSync(
+        join(process.cwd(), ".argus", "config.json"),
+        JSON.stringify(oc, null, 2) + "\n"
+      );
+      const wired = wireHarnesses(
+        process.cwd(),
+        { command: "node", args: [mcpServerPath()] },
+        { harnesses: oH !== -1 ? args[oH + 1] : undefined }
+      );
+      console.log(
+        `${green("✔")} wired ${wired.written.length} file(s)` +
+          (wired.unchanged.length ? dim(` · ${wired.unchanged.length} already set`) : "")
+      );
+
+      let target = oU !== -1 ? args[oU + 1] : undefined;
+      let tunnel: { url: string; child: ChildProcess } | undefined;
+      if (!target && oL !== -1) {
+        const port = Number(args[oL + 1]);
+        if (!Number.isInteger(port)) {
+          console.error("usage: argus onboard ... --local <port>");
+          process.exit(2);
+        }
+        console.log(dim(`tunnelling localhost:${port} ...`));
+        tunnel = await startTunnel(port);
+        target = tunnel.url;
+        // A fresh trycloudflare hostname needs a moment at the edge.
+        for (let i = 0; i < 15; i++) {
+          try {
+            const res = await fetch(target, { redirect: "manual" });
+            if (res.status < 500 && res.status !== 404) break;
+          } catch {
+            /* not yet */
+          }
+          await new Promise((r) => setTimeout(r, 2000));
+        }
+      }
+      if (!target) {
+        tunnel?.child.kill();
+        console.error("point me at the app: --url https://your-app  or  --local 5173");
+        process.exit(2);
+      }
+      console.log(dim(`argus → ${oc.api} · ${target}`));
+
+      try {
+        const report = await api<SmokeReport>(oc, "POST", "/v1/smoke", {
+          url: target,
+          project: basename(process.cwd()),
+        });
+        printSmokeReport(oc, report);
+
+        const flowsPath = join(process.cwd(), ".argus", "flows");
+        const flows = existsSync(flowsPath)
+          ? readdirSync(flowsPath)
+              .filter((f) => f.endsWith(".json"))
+              .map((f) => resolveEnvPlaceholders(JSON.parse(readFileSync(join(flowsPath, f), "utf8"))))
+          : [];
+        let flowsOk = true;
+        if (flows.length === 0) {
+          console.log(
+            dim("no flows yet — ask your agent to record them, or run: argus preset cf-saas <url>\n")
+          );
+        } else {
+          const verdict = await api<{
+            status: string;
+            passed: number;
+            failed: number;
+            results: Array<{
+              flow: string;
+              status: string;
+              decision?: { whatChanged: string; nextAction: string };
+            }>;
+          }>(oc, "POST", "/v1/flows/verify", {
+            flows,
+            baseUrl: target,
+            project: basename(process.cwd()),
+            concurrency: 4,
+          });
+          flowsOk = verdict.status === "pass";
+          console.log(
+            `\n${flowsOk ? green(bold(" FLOWS PASS ")) : red(bold(" FLOWS FAIL "))} ${verdict.passed}/${flows.length}`
+          );
+          for (const r of verdict.results) {
+            if (r.status === "ok") continue;
+            console.log(`  ${red("✘")} ${r.flow}`);
+            if (r.decision) console.log(`      ${dim("→ " + r.decision.nextAction)}`);
+          }
+        }
+
+        const ok = report.status === "pass" && flowsOk;
+        console.log(
+          `\n${
+            ok
+              ? green(bold(" READY ")) + " — nothing to fix"
+              : red(bold(" NOT YET ")) + " — fix the findings above, then run it again"
+          }\n`
+        );
+        process.exit(ok ? 0 : 1);
+      } finally {
+        tunnel?.child.kill();
+      }
+      break;
+    }
     case "gate": {
       // argus gate [--url <url>] [--upload] — verify a build BEFORE it takes traffic.
       const urlFlagIndex = args.indexOf("--url");
@@ -706,6 +827,9 @@ usage:
   argus init <api> <token>     wire this project to Argus — MCP server + verification
                                steps for Claude Code, Cursor, VS Code, Codex, any
                                AGENTS.md reader (--harness all, --write-global)
+  argus onboard <api> <token>  one command from nothing to a verdict: wire every
+                               harness, tunnel a local app, run smoke + all flows
+                               (--url https://… | --local 5173)
   argus tunnel <port>          hold a tunnel open (for agent-driven sessions)
   argus sessions               list active cloud browser sessions
   argus capacity [--watch]     live fleet capacity: browsers, warm pool, per-tenant usage

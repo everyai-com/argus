@@ -12,6 +12,9 @@ verify-or-refuse ideas — rebuilt cloud-native, zero-install, with the AI brain
 running on your **existing coding agent** — Claude Code, Codex, Cursor, VS Code,
 or anything that speaks MCP (no API key anywhere).
 
+> **Start here:** paste [`START.md`](START.md) to your coding agent. It wires itself into the project
+> and drives the app to a verdict — one link, one question (your Argus token).
+
 ## What it does
 
 | Check | How | Cost |
@@ -92,14 +95,12 @@ agent wire each project. Paste this into your coding agent — Claude Code, Code
 Cursor, Copilot, Gemini CLI, Windsurf, or any MCP agent:
 
 ```text
-Argus is a cloud verification platform. It drives a real cloud browser against my
-app and hands back evidence-graded verdicts — network, console, route, app signals
-and store state — plus deterministic flows that replay with no model in the loop.
-
-Read https://raw.githubusercontent.com/everyai-com/argus/main/SKILL.md and follow its
-SETUP steps exactly. Do not stop until you have driven one real flow in my app and
-produced a verdict. A config file is not an install; a verdict is.
+Read https://raw.githubusercontent.com/everyai-com/argus/main/START.md and do exactly what it says.
 ```
+
+That brief has the agent wire itself in, run one command (`argus onboard <api> <token> --url <app>`
+or `--local <port>`), and loop `verify → fix → verify` until the verdict is green. It only ever asks
+you for the API URL and token.
 
 Claude Code — the plugin installs the Argus skills in one step:
 

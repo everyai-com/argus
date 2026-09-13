@@ -63,6 +63,9 @@ moves the app and proves nothing.
 ## Links
 
 - Repository: https://github.com/everyai-com/argus
+- **Start here (paste to an agent):** https://raw.githubusercontent.com/everyai-com/argus/main/START.md
 - Harness matrix: `docs/harness-support.md`
+- Setup brief + error catalogue: `docs/agent-setup-prompt.md`
 - Skill / critical path: `SKILL.md`
+- One-command onboarding: `argus onboard <api> <token> --url <app> | --local <port>`
 - GitHub App: `docs/github-app.md` · Reticle compatibility: `docs/reticle-compatibility.md`

@@ -15,11 +15,12 @@ Setup is not complete until you have **driven one real flow in the app and retur
 1. **Get an Argus API.** In an Argus checkout: `pnpm install && pnpm check`, then
    `cd packages/cloud && wrangler secret put ARGUS_TOKEN && wrangler deploy`. Note the
    deployed URL and the token you set.
-2. **Wire the project.** From the checkout:
-   `node packages/cli/dist/index.js init <api-url> <token> --harness all`.
-   This writes `.argus/config.json`, registers the MCP server in every harness it detects
-   (Claude Code, Cursor, VS Code, Codex; `--write-global` also updates `~/.codex/config.toml`),
-   and writes the standing verification steps into `AGENTS.md` / `CLAUDE.md`.
+2. **Wire the project.** The fast path is one command:
+   `node <ARGUS_REPO>/packages/cli/dist/index.js onboard <api-url> <token> --url <app-url>`
+   (or `--local <port>` for a local app). It writes `.argus/config.json`, registers the MCP server in
+   every harness it detects, tunnels a local app, and runs smoke + every saved flow to a verdict.
+   Behind it: `init` writes the config and harness files, `--harness all` covers every harness,
+   and `--write-global` also updates `~/.codex/config.toml`.
    **Restart the client** so it picks up the new MCP server.
 3. **Point it at a running app.** Local → `argus tunnel <port>` (or `test --local <port>`)
    and use the tunnel URL. Deployed → use its URL directly.
