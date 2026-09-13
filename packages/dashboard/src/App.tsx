@@ -4,6 +4,7 @@
  * worker that runs the tests; auto-refreshes so runs appear as they land.
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { AccountView } from "./Account";
 
 // ---------------------------------------------------------------------------
 // API helpers — the token is kept in localStorage and sent as a header;
@@ -466,7 +467,7 @@ function RunDetail({ token, runId, onBack }: { token: string; runId: string; onB
 
 export function App(): React.ReactElement {
   const [token, setToken] = useToken();
-  const [tab, setTab] = useState<"fleet" | "runs" | "sessions" | "capacity" | "github">("fleet");
+  const [tab, setTab] = useState<"fleet" | "runs" | "sessions" | "capacity" | "github" | "account">("account");
   const [runs, setRuns] = useState<RunRow[]>([]);
   const [sessions, setSessions] = useState<any[]>([]);
   const [fleet, setFleet] = useState<any[]>([]);
@@ -498,11 +499,13 @@ export function App(): React.ReactElement {
   }, [refresh]);
 
   const body = useMemo(() => {
+    if (tab === "account") return <AccountView onToken={setToken} />;
     if (tab === "github") return <GitHubView />;
     if (!token)
       return (
         <div className="empty">
-          Paste your Argus API token above to connect. <br />
+          Paste your Argus API token above to connect, or open the{" "}
+          <strong>Account</strong> tab to create one. <br />
           <span className="small">(it's in .argus/config.json in your project)</span>
         </div>
       );
@@ -607,6 +610,9 @@ export function App(): React.ReactElement {
           </button>
           <button className={tab === "github" && !selected ? "active" : ""} onClick={() => { setTab("github"); setSelected(undefined); }}>
             GitHub
+          </button>
+          <button className={tab === "account" && !selected ? "active" : ""} onClick={() => { setTab("account"); setSelected(undefined); }}>
+            Account
           </button>
         </nav>
         <span className="spacer" />

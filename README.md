@@ -127,6 +127,11 @@ the one piece of Reticle's install story Argus does not have.
 with your bearer token and there is nothing to install; flows are stored
 server-side per tenant. See [`START.md`](START.md) and [`server.json`](server.json).
 
+**Create the token in the dashboard.** Open `<your-argus>/`, use the **Account**
+tab to sign up (better-auth, email + password), then click **Create MCP token** —
+it shows the token once and gives you the ready-to-paste `mcpServers` JSON. That
+needs one Worker secret: `wrangler secret put BETTER_AUTH_SECRET`.
+
 **Local stdio (fallback).** Argus also ships a stdio MCP server for harnesses
 that prefer a local process or want flows committed to the repo. The harness only
 changes *where* you register it — `argus init <api-url> <token>` wires it into

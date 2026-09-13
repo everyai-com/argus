@@ -159,6 +159,7 @@ export class Coordinator extends DurableObject<Env> {
     if (path === "/tenant-list") return json({ tenants: await this.tenantUsage() });
     if (path === "/tenant-update") return await this.tenantUpdate(body);
     if (path === "/tenant-delete") return await this.tenantDelete(body);
+    if (path === "/tenant-set-token") return await this.tenantSetToken(body);
     // Platform job idempotency. A single DO serializes competing provider
     // webhooks so duplicate deployment_status deliveries cannot launch two
     // expensive browser suites for the same SHA/target.
@@ -450,6 +451,26 @@ export class Coordinator extends DurableObject<Env> {
     });
     if (!result.ok) return json({ error: "tenant_update_failed", detail: result.error }, 409);
     return json({ tenant: result.tenant });
+  }
+
+  /** Point an existing tenant at a new token hash (rotation). */
+  private async tenantSetToken(body: Record<string, unknown>): Promise<Response> {
+    const { id, tokenHash } = body as { id: string; tokenHash: string };
+    let result: { ok: boolean; error?: string } = { ok: false };
+    await this.ctx.blockConcurrencyWhile(async () => {
+      const tenants = await this.tenants();
+      if (!tenants[id]) {
+        result = { ok: false, error: "no such tenant" };
+        return;
+      }
+      const previous = await this.ctx.storage.get<string>(`tenanttok:${id}`);
+      if (previous) await this.ctx.storage.delete(`tok:${previous}`);
+      await this.ctx.storage.put(`tok:${tokenHash}`, id);
+      await this.ctx.storage.put(`tenanttok:${id}`, tokenHash);
+      result = { ok: true };
+    });
+    if (!result.ok) return json({ error: "tenant_token_failed", detail: result.error }, 409);
+    return json({ ok: true });
   }
 
   private async tenantDelete(body: Record<string, unknown>): Promise<Response> {

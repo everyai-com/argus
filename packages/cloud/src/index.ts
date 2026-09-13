@@ -31,6 +31,7 @@ import { handleGitHubEvent, verifyGitHubWebhook } from "./github-app";
 import { renderEvidencePage, serveEvidenceArtifact, verifyEvidenceSignature } from "./evidence";
 import { handleMcp } from "./mcp";
 import { deleteFlow, getFlow, listFlows, putFlow } from "./flows-store";
+import { createAuth, ensureAuthSchema } from "./auth";
 
 const ADMIN_TENANT = "_admin";
 
@@ -140,6 +141,81 @@ app.all("/mcp", async (c) => {
     origin: new URL(c.req.url).origin,
     token,
     dispatch: async (request) => app.fetch(request, c.env),
+  });
+});
+
+// --- accounts (self-serve signup) -------------------------------------------
+// /api/auth/* is better-auth; /api/mcp-token turns a signed-in account into a
+// tenant token the user pastes into their agent. Both are outside /v1 on
+// purpose: they authenticate with a session cookie, not a bearer token.
+
+app.on(["POST", "GET"], "/api/auth/*", async (c) => {
+  if (!c.env.BETTER_AUTH_SECRET) {
+    return c.json(
+      { error: "auth_not_configured", detail: "set BETTER_AUTH_SECRET on the Worker" },
+      503
+    );
+  }
+  const origin = new URL(c.req.url).origin;
+  await ensureAuthSchema(c.env, origin);
+  return createAuth(c.env, origin).handler(c.req.raw);
+});
+
+app.post("/api/mcp-token", async (c) => {
+  if (!c.env.BETTER_AUTH_SECRET) {
+    return c.json(
+      { error: "auth_not_configured", detail: "set BETTER_AUTH_SECRET on the Worker" },
+      503
+    );
+  }
+  const origin = new URL(c.req.url).origin;
+  await ensureAuthSchema(c.env, origin);
+  const session = await createAuth(c.env, origin).api.getSession({
+    headers: c.req.raw.headers,
+  });
+  if (!session) return c.json({ error: "unauthorized" }, 401);
+
+  const tenantId = `u_${session.user.id.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 16) || "user"}`;
+  const token = `argus_${crypto.randomUUID().replace(/-/g, "")}${crypto
+    .randomUUID()
+    .replace(/-/g, "")
+    .slice(0, 8)}`;
+  const tokenHash = await sha256Hex(token);
+  const coord = coordinator(c.env);
+
+  const created = await coord.fetch("https://do/tenant-create", {
+    method: "POST",
+    body: JSON.stringify({
+      id: tenantId,
+      name: session.user.email,
+      reserved: 0,
+      maxBurst: 10,
+      tokenHash,
+    }),
+  });
+  if (!created.ok) {
+    // The account already has a tenant — rotate its token rather than fail.
+    const rotated = await coord.fetch("https://do/tenant-set-token", {
+      method: "POST",
+      body: JSON.stringify({ id: tenantId, tokenHash }),
+    });
+    if (!rotated.ok) return c.json({ error: "mint_failed", detail: await rotated.text() }, 500);
+  }
+
+  const mcpUrl = `${origin}/mcp`;
+  return c.json({
+    tenantId,
+    token,
+    tokenShownOnce: true,
+    mcpUrl,
+    config: {
+      json: {
+        mcpServers: {
+          argus: { type: "http", url: mcpUrl, headers: { Authorization: `Bearer ${token}` } },
+        },
+      },
+      codex: `export ARGUS_TOKEN="${token}"\ncodex mcp add argus --url ${mcpUrl} --bearer-token-env-var ARGUS_TOKEN`,
+    },
   });
 });
 

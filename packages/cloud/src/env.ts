@@ -21,4 +21,10 @@ export interface Env {
   ARGUS_GITHUB_APP_SLUG?: string;
   /** Canonical public dashboard/API origin. Falls back to the request origin. */
   ARGUS_PUBLIC_URL?: string;
+  /** Accounts + sessions (better-auth). */
+  DB: D1Database;
+  /** Signing secret for auth sessions. Set with `wrangler secret put BETTER_AUTH_SECRET`. */
+  BETTER_AUTH_SECRET?: string;
+  /** Canonical auth origin (defaults to the request origin). */
+  BETTER_AUTH_URL?: string;
 }

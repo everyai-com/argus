@@ -18,6 +18,16 @@
     { "binding": "ARTIFACTS", "bucket_name": "argus-artifacts" }
   ],
 
+  // Accounts + sessions (better-auth). Self-serve signup mints a tenant token.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "argus-accounts",
+      "database_id": "06e842c8-b0c4-46f5-996e-bc3fbfebdc3b",
+      "migrations_dir": "migrations"
+    }
+  ],
+
   "durable_objects": {
     "bindings": [
       { "name": "BROWSER_SESSION", "class_name": "BrowserSession" },
@@ -32,6 +42,6 @@
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
-    "run_worker_first": ["/v1/*", "/platform/*", "/health", "/mcp"]
+    "run_worker_first": ["/v1/*", "/platform/*", "/health", "/mcp", "/api/*"]
   }
 }

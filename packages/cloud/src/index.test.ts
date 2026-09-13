@@ -49,6 +49,15 @@ describe("worker API boundary", () => {
     ).toBe(401);
   });
 
+  it("fails accounts closed until the auth secret is configured", async () => {
+    const session = await app.request("https://argus.test/api/auth/get-session", {}, env());
+    expect(session.status).toBe(503);
+    expect(await session.json()).toMatchObject({ error: "auth_not_configured" });
+
+    const mint = await app.request("https://argus.test/api/mcp-token", { method: "POST" }, env());
+    expect(mint.status).toBe(503);
+  });
+
   it("reports GitHub platform readiness without exposing credentials", async () => {
     const response = await app.request(
       "https://argus.test/platform/github/status",
