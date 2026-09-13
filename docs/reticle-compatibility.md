@@ -20,6 +20,8 @@ packages.
 | Browser leasing | Cloudflare Browser Rendering + Durable Objects | Native |
 | Reticle flow files | `argus_flow_import_reticle` | Import bridge, tested against v1 |
 | App signals and state | `@argus/sdk` (`signal()`, `registerStore()`) | Native Argus protocol |
+| Composable predicates | `allOf` / `anyOf` in `argus_assert` and flows | Native |
+| Browser storage observation | `storage` predicate (localStorage / sessionStorage) | Native |
 | Install as a skill | `SKILL.md`, `skills/*/SKILL.md`, `.claude-plugin/` | Native |
 | Docs for agents | `llms.txt` | Native |
 
@@ -41,9 +43,7 @@ Honest gaps against Reticle today — tracked, not hidden:
 | **React commit stream** / render-storm detection | Missing | `argus_observe` reads network, console and route only |
 | **State-library adapters** (TanStack Query, Jotai, XState, Valtio, MobX, Recoil, Svelte stores, Pinia) | Missing | Only the generic `registerStore()` + `signal()` push API ships |
 | **WebSocket / SSE frame** observation | Missing | The network ring buffer holds request/response events |
-| **Storage** observation (localStorage / sessionStorage / cookies) as a predicate | Missing | Storage is used for auth profiles, not assertable |
-| Predicate **combinators** (`allOf` / `anyOf`) | Partial | `AssertRequest.predicates[]` is already AND; there is no nested OR/AND tree |
-| **Meta-tool** to cap the surface (`reticle_tools` / `reticle_run`) | Missing | All 24 `argus_*` tools are always advertised |
+| **Meta-tool** to cap the surface (`reticle_tools` / `reticle_run`) | Partial | `argus_tools` adds a catalog + verdict flags; the advertised surface is not yet subset-by-default |
 | One-command **npm install** of the MCP server | Missing | `@argus/cli` / `@argus/mcp` are not published; `argus init` runs from a checkout |
 | Redis/TanStack-style **stale-cache** detection | Missing | No cache-adapter reads |
 | **HITL annotate** HUD (click an element, send a note) | Missing | Dashboard is read-only over runs |

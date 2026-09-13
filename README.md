@@ -198,6 +198,11 @@ That `expect` is what catches the **silent 500**: the UI optimistically renders
 the task either way, a DOM assertion stays green, and the network predicate
 fails the flow. Verified against `apps/demo` (`?bug=silent500` et al).
 
+Predicates also cover browser `storage` (localStorage/sessionStorage) and compose
+with `allOf` / `anyOf`, so one check can require several consequences at once —
+e.g. the POST succeeded **and** the route changed **and** no console error slipped
+in.
+
 **Test inputs & logins:** any string in a flow may use `${VAR}` placeholders
 (e.g. `"value": "${TEST_USER_EMAIL}"`). They resolve from the environment on
 your machine at replay time — never sent in files, never committed. A missing
@@ -332,6 +337,12 @@ argus_email_link({ address, contains: "verify-email" }) → the link to drive
 
 Verified end to end on grandstage: sign up → `email_verified = 0` → read the
 emailed link → visit it in a cloud browser → `email_verified = 1`.
+
+---
+
+## License
+
+Apache-2.0 — see [LICENSE](./LICENSE).
 
 ---
 

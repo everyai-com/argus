@@ -250,6 +250,78 @@ export async function evalPredicate(
         evidence: `${p.store}${p.path ? "." + p.path : ""} = ${shown} (wanted ${JSON.stringify(p.equals ?? null)})`,
       };
     }
+    case "storage": {
+      const read = await page
+        .evaluate(
+          ({ area, key }: { area: "local" | "session"; key: string }) => {
+            try {
+              const store = area === "local" ? window.localStorage : window.sessionStorage;
+              return { present: true, value: store.getItem(key) as string | null };
+            } catch {
+              return { present: false, value: null };
+            }
+          },
+          { area: p.area, key: p.key }
+        )
+        .catch(() => ({ present: false, value: null }) as {
+          present: boolean;
+          value: string | null;
+        });
+
+      if (!read.present) {
+        // Blocked storage (privacy mode, sandboxed frame) is "couldn't look",
+        // not "the value is wrong" — say which.
+        return {
+          pass: false,
+          tier: "consequence",
+          evidence: `could not read ${p.area}Storage["${p.key}"] (blocked or unavailable)`,
+        };
+      }
+      const value = read.value;
+      const shown = value === null ? "null" : JSON.stringify(value).slice(0, 120);
+      if (p.exists !== undefined) {
+        const exists = value !== null;
+        return {
+          pass: exists === p.exists,
+          tier: "consequence",
+          evidence: `${p.area}Storage["${p.key}"] ${exists ? "is set" : "is absent"}`,
+        };
+      }
+      if (p.includes !== undefined) {
+        return {
+          pass: (value ?? "").includes(p.includes),
+          tier: "consequence",
+          evidence: `${p.area}Storage["${p.key}"] = ${shown}`,
+        };
+      }
+      return {
+        pass: (value ?? "") === (p.equals ?? ""),
+        tier: "consequence",
+        evidence: `${p.area}Storage["${p.key}"] = ${shown} (wanted ${JSON.stringify(p.equals ?? "")})`,
+      };
+    }
+    case "allOf":
+    case "anyOf": {
+      const results = await Promise.all(
+        p.predicates.map((child) => evalPredicate(page, buffers, child))
+      );
+      const passing = results.filter((r) => r.pass);
+      const pass = p.kind === "allOf" ? passing.length === results.length : passing.length > 0;
+      // The verdict rests only on the evidence that carried it: every child for
+      // allOf, just the passing children for anyOf.
+      const basis = pass && p.kind === "anyOf" ? passing : results;
+      const failed = results.filter((r) => !r.pass);
+      return {
+        pass,
+        tier: weakestTier(basis),
+        evidence: pass
+          ? `${p.kind}: ${p.kind === "allOf" ? results.length : passing.length}/${results.length} predicate(s) passed`
+          : `${p.kind} failed — ${failed
+              .slice(0, 3)
+              .map((r) => r.evidence)
+              .join(" | ")}`,
+      };
+    }
   }
 }
 

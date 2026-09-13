@@ -391,7 +391,8 @@ export type ObserveResponse = z.infer<typeof ObserveResponseSchema>;
 // Assert — evidence-tiered predicates over program truth
 // ---------------------------------------------------------------------------
 
-export const PredicateSchema = z.discriminatedUnion("kind", [
+/** Leaf predicates — the concrete evidence checks (everything but combinators). */
+export const LeafPredicateSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("network"),
     urlIncludes: z.string(),
@@ -440,8 +441,49 @@ export const PredicateSchema = z.discriminatedUnion("kind", [
     includes: z.string().optional(),
     exists: z.boolean().optional(),
   }),
+  /**
+   * Browser storage — the client's own persisted truth (localStorage /
+   * sessionStorage). Use it when the app reads from storage and the stored
+   * value, not the rendered DOM, is the thing that must be right.
+   */
+  z.object({
+    kind: z.literal("storage"),
+    area: z.enum(["local", "session"]).default("local"),
+    key: z.string(),
+    exists: z.boolean().optional(),
+    equals: z.string().optional(),
+    includes: z.string().optional(),
+  }),
 ]);
-export type Predicate = z.infer<typeof PredicateSchema>;
+export type LeafPredicate = z.infer<typeof LeafPredicateSchema>;
+
+/** Group predicates: `allOf` needs every child, `anyOf` needs at least one. */
+export interface PredicateCombinator {
+  kind: "allOf" | "anyOf";
+  predicates: Predicate[];
+}
+
+export type Predicate = LeafPredicate | PredicateCombinator;
+
+/**
+ * Predicates are recursive so `allOf`/`anyOf` can nest. Authored as a lazy
+ * union rather than a discriminated union because zod cannot build a recursive
+ * discriminated union directly; the leaf schema still carries the `kind`
+ * discriminator for every concrete check.
+ */
+export const PredicateSchema: z.ZodType<Predicate> = z.lazy(() =>
+  z.union([
+    LeafPredicateSchema,
+    z.object({
+      kind: z.literal("allOf"),
+      predicates: z.array(PredicateSchema).min(1).max(20),
+    }),
+    z.object({
+      kind: z.literal("anyOf"),
+      predicates: z.array(PredicateSchema).min(1).max(20),
+    }),
+  ])
+) as unknown as z.ZodType<Predicate>;
 
 export const AssertRequestSchema = z.object({
   predicates: z.array(PredicateSchema).min(1).max(20),

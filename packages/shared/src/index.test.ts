@@ -5,6 +5,7 @@ import {
   FlowSchema,
   LeaseRequestSchema,
   MAX_LEASE_TTL_SECONDS,
+  PredicateSchema,
   TenantIdSchema,
   UpdateTenantRequestSchema,
 } from "./index";
@@ -53,5 +54,32 @@ describe("wire contract", () => {
     expect(FlowSchema.safeParse(base).success).toBe(true);
     expect(FlowSchema.safeParse({ ...base, success: [] }).success).toBe(false);
     expect(FlowSchema.safeParse({ ...base, name: "../escape" }).success).toBe(false);
+  });
+
+  it("parses composable predicates and browser storage", () => {
+    const storage = { kind: "storage", key: "token", includes: "tok" };
+    expect(PredicateSchema.safeParse(storage).success).toBe(true);
+    // area defaults to local
+    expect((PredicateSchema.parse(storage) as { area?: string }).area).toBe("local");
+
+    const nested = {
+      kind: "allOf",
+      predicates: [
+        { kind: "route", includes: "/checkout" },
+        { kind: "anyOf", predicates: [storage, { kind: "console-clean" }] },
+      ],
+    };
+    expect(PredicateSchema.safeParse(nested).success).toBe(true);
+    // an empty group is not a check
+    expect(PredicateSchema.safeParse({ kind: "allOf", predicates: [] }).success).toBe(false);
+
+    const flow = {
+      version: 1 as const,
+      name: "checkout",
+      startUrl: "https://example.com",
+      steps: [{ action: { action: "wait" as const, ms: 50 } }],
+      success: [nested],
+    };
+    expect(FlowSchema.safeParse(flow).success).toBe(true);
   });
 });

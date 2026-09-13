@@ -33,8 +33,9 @@ Only `argus_assert` and a flow's `expect` / `success` predicates produce a verdi
 1. `argus_lease <url>` — each parallel agent or flow holds its **own** session.
 2. `argus_query { interactive: true }` — the interactive surface, with refs.
 3. Drive with `argus_act_batch`; read `argus_observe` for the network/console truth.
-4. `argus_assert` with predicates over `network` / `route` / `console-clean` / `signal` /
-   `state` / `visible` / `text`. Name the expected consequence **before** acting.
+4. `argus_assert` with predicates over `network` / `route` / `console-clean` / `storage` /
+   `signal` / `state` / `visible` / `text`, composed with `allOf` / `anyOf`. Name the expected
+   consequence **before** acting.
 5. `argus_screenshot` and actually look — you are the visual judge.
 6. `argus_record start` → drive → `stop` → `argus_flow_save` with per-step `expect` and a
    `success` oracle. That is the regression net.

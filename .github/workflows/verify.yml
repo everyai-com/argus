@@ -1,0 +1,48 @@
+name: Verify (Argus)
+
+# Runs the Argus flow suite (smoke + audit + every saved flow) against a target
+# and reports findings. Opt-in: set repository variables
+#   ARGUS_VERIFY_ENABLED = true
+#   ARGUS_API_URL        = https://argus-cloud.<you>.workers.dev
+#   ARGUS_VERIFY_TARGET  = https://the-app-the-flows-describe.example.com
+# plus the secret ARGUS_E2E_TOKEN. Without them the job is skipped, never failed.
+#
+# `argus verify` re-homes each committed flow onto the target origin, so the
+# target must be an app the committed `.argus/flows/*.json` actually describe.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: argus-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  app-verification:
+    name: Smoke + audit + every saved flow
+    if: vars.ARGUS_VERIFY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ARGUS_API: ${{ vars.ARGUS_API_URL }}
+      ARGUS_TOKEN: ${{ secrets.ARGUS_E2E_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.3.0
+          run_install: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @argus/cli build
+      # Non-zero exit on any failure — this is the gate. The printed verdict and
+      # per-finding decision envelopes are the feedback.
+      - name: Verify
+        run: node packages/cli/dist/index.js verify "${{ vars.ARGUS_VERIFY_TARGET }}"

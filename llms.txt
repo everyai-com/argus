@@ -16,9 +16,11 @@ client (Claude Code, Codex, Cursor, VS Code/Copilot, Gemini CLI, Windsurf, Cline
 - **Checks:** smoke (load, console/network clean, responsive overflow, screenshots) · flows
   (recorded, semantically anchored, deterministically replayed) · audit (axe-core a11y, FCP/LCP/CLS,
   broken links, overflow, pixel-diff visual regression).
-- **Evidence tiers:** signal > consequence (network/route/state) > dom > visual. A verdict reports the
+- **Evidence tiers:** signal > consequence (network/route/state/storage) > dom > visual. A verdict reports the
   **weakest tier** it rests on — never upgraded. Missing evidence is `coverage: partial`, never a
   quiet pass. Unresolvable anchors are errors, never guesses.
+- **Predicates** cover `network`, `console-clean`, `route`, `storage`, `visible`/`hidden`/`text`,
+  `signal` and `state`, and compose recursively with `allOf` / `anyOf`.
 
 ## How it is used
 
@@ -40,6 +42,7 @@ Drive/read: `argus_query`, `argus_act`, `argus_act_batch`, `argus_observe`, `arg
 `argus_screenshot`.
 Verify: `argus_smoke`, `argus_audit`, `argus_runs`, `argus_findings`.
 Flows: `argus_record`, `argus_flow_save/list/replay/verify/heal`, `argus_flow_import_reticle`.
+Discovery: `argus_tools` (the full surface, flagging which tools yield a verdict).
 Mail/magic links: `argus_email_link`.
 
 Only `argus_assert` and a flow's `expect` / `success` predicates produce a verdict — `argus_act`
@@ -52,7 +55,7 @@ moves the app and proves nothing.
 - **No state-library adapters.** `@argus/sdk` offers a generic `registerStore()` + `signal()`; TanStack
   Query, Jotai, XState, Valtio, MobX, Recoil, Svelte stores and Pinia have no shipped adapter.
 - **No React commit stream / render-storm detection.**
-- **No WebSocket/SSE frame or storage (localStorage/sessionStorage) predicates.**
+- **No WebSocket/SSE frame observation.** The network ring buffer holds request/response events.
 - **No desktop (Electron/Tauri) capture.**
 
 ## Links

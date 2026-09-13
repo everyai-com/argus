@@ -1,0 +1,8 @@
+{
+  "targetUrl": "https://argus-cloud.everyai-com.workers.dev/",
+  "project": "argus-dashboard",
+  "checks": ["smoke", "audit"],
+  "viewports": ["mobile", "desktop"],
+  "colorSchemes": ["light"],
+  "flowConcurrency": 3
+}

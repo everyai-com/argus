@@ -107,7 +107,32 @@ const server = new McpServer(
   { instructions: ARGUS_INSTRUCTIONS }
 );
 
-server.tool(
+/**
+ * The SDK keeps its registered tool list private, so we record a catalog as we
+ * register. `argus_tools` exposes it, letting a client discover the full
+ * surface (and, crucially, which tools actually return a verdict) in one cheap
+ * call instead of inferring it from every tool description up front.
+ */
+interface ToolCatalogEntry {
+  name: string;
+  description: string;
+  yieldsVerdict: boolean;
+}
+
+const VERDICT_TOOLS = new Set(["argus_assert", "argus_flow_replay", "argus_flow_verify"]);
+const TOOL_CATALOG: ToolCatalogEntry[] = [];
+
+function registerTool<Shape extends z.ZodRawShape>(
+  name: string,
+  description: string,
+  schema: Shape,
+  handler: (args: z.infer<z.ZodObject<Shape>>) => Promise<unknown> | unknown
+) {
+  TOOL_CATALOG.push({ name, description, yieldsVerdict: VERDICT_TOOLS.has(name) });
+  return (server.tool as (...args: unknown[]) => unknown)(name, description, schema, handler);
+}
+
+registerTool(
   "argus_lease",
   "Lease an isolated cloud browser session pointed at a URL. Returns a sessionId used by every other argus tool. Each parallel agent/flow should hold its own lease; release it when done.",
   {
@@ -123,7 +148,7 @@ server.tool(
   async (args) => jsonResult(await api("POST", "/v1/lease", args))
 );
 
-server.tool(
+registerTool(
   "argus_auth_save",
   "Save this session's cookies/localStorage as a reusable auth profile — call it AFTER driving a real login. Every later flow/lease can then start signed in via authProfile, instead of re-driving the login form. Profiles are stored server-side, never in the repo.",
   { sessionId: z.string(), profile: z.string().describe("profile name, e.g. \"default\"") },
@@ -131,14 +156,14 @@ server.tool(
     jsonResult(await api("POST", `/v1/session/${sessionId}/auth-save`, { profile }))
 );
 
-server.tool(
+registerTool(
   "argus_auth_list",
   "List saved auth profiles with their age. A stale profile (expired session cookies) is the usual cause of an authenticated flow suddenly failing — re-run the login flow to refresh it.",
   {},
   async () => jsonResult(await api("GET", "/v1/auth/profiles"))
 );
 
-server.tool(
+registerTool(
   "argus_auth_delete",
   "Delete a saved auth profile. Profiles are host-scoped, so pass the host it belongs to (see argus_auth_list).",
   { profile: z.string(), host: z.string() },
@@ -146,21 +171,21 @@ server.tool(
     jsonResult(await api("DELETE", `/v1/auth/profile/${profile}?host=${encodeURIComponent(host)}`))
 );
 
-server.tool(
+registerTool(
   "argus_release",
   "Release a leased browser session, freeing its slot for other agents.",
   { sessionId: z.string() },
   async ({ sessionId }) => jsonResult(await api("DELETE", `/v1/session/${sessionId}`))
 );
 
-server.tool(
+registerTool(
   "argus_sessions",
   "List active cloud browser sessions (the fleet view).",
   {},
   async () => jsonResult(await api("GET", "/v1/sessions"))
 );
 
-server.tool(
+registerTool(
   "argus_query",
   "Find elements on the page. Pass an anchor (testid / role+name / text / css — resolved in that ladder order) to locate a specific target, or interactive:true to list the interactive surface. Returns stable refs usable in argus_act.",
   {
@@ -173,7 +198,7 @@ server.tool(
     jsonResult(await api("POST", `/v1/session/${sessionId}/query`, rest))
 );
 
-server.tool(
+registerTool(
   "argus_act",
   "Perform one action (goto/click/fill/select/press/hover/scroll/back/reload/wait) and get its OBSERVED effects: navigation, DOM delta, new console errors, new network failures. Target elements by ref (from argus_query) or semantic anchor.",
   { sessionId: z.string(), step: ActionSchema },
@@ -181,7 +206,7 @@ server.tool(
     jsonResult(await api("POST", `/v1/session/${sessionId}/act`, step))
 );
 
-server.tool(
+registerTool(
   "argus_act_batch",
   "Perform up to 50 actions in one call (much faster than one-by-one). Executes in order; stops at the first failure unless stopOnError:false. Returns per-step effects.",
   {
@@ -193,7 +218,7 @@ server.tool(
     jsonResult(await api("POST", `/v1/session/${sessionId}/act-batch`, rest))
 );
 
-server.tool(
+registerTool(
   "argus_observe",
   "Read what happened: network requests, console messages, current route — from the session's ring buffers. Pass the previous cursor to get only new events.",
   {
@@ -205,15 +230,15 @@ server.tool(
     jsonResult(await api("POST", `/v1/session/${sessionId}/observe`, rest))
 );
 
-server.tool(
+registerTool(
   "argus_assert",
-  "Assert evidence-tiered predicates over program truth: network (url/status/cardinality), console-clean, route, visible/hidden/text. The verdict reports the WEAKEST evidence tier it rests on — prefer network/route (consequence) over DOM presence.",
+  "Assert evidence-tiered predicates over program truth: network (url/status/cardinality), console-clean, route, browser storage, visible/hidden/text, plus app signal/state (with the SDK). Compose them with allOf/anyOf. The verdict reports the WEAKEST evidence tier it rests on — prefer network/route/signal (consequence) over DOM presence.",
   { sessionId: z.string(), predicates: z.array(PredicateSchema).min(1).max(20) },
   async ({ sessionId, predicates }) =>
     jsonResult(await api("POST", `/v1/session/${sessionId}/assert`, { predicates }))
 );
 
-server.tool(
+registerTool(
   "argus_screenshot",
   "Screenshot the session's page. Returns the image itself so you can SEE the current state, plus its artifact URL.",
   {
@@ -242,7 +267,7 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "argus_smoke",
   "Run the zero-config smoke suite against a URL: load check, console/network cleanliness, responsive overflow, screenshots at mobile/tablet/desktop. Returns the full report with findings and decision envelopes.",
   {
@@ -253,21 +278,21 @@ server.tool(
   async (args) => jsonResult(await api("POST", "/v1/smoke", args))
 );
 
-server.tool(
+registerTool(
   "argus_runs",
   "List recent verification runs (smoke/audit/flow-verify) with their run ids — the run history the dashboard shows.",
   {},
   async () => jsonResult(await api("GET", "/v1/runs"))
 );
 
-server.tool(
+registerTool(
   "argus_findings",
   "Fetch a run's full report(s) — findings with severities, decision envelopes (whatChanged/nextAction), perf metrics, visual diffs, flow verdicts. This is the feedback loop: read the findings, fix the code, re-verify.",
   { runId: z.string() },
   async ({ runId }) => jsonResult(await api("GET", `/v1/run/${runId}`))
 );
 
-server.tool(
+registerTool(
   "argus_audit",
   "Run the full UX/visual audit against a URL: axe-core accessibility (WCAG 2.1 A/AA), performance metrics (FCP/LCP/CLS), broken-link check, responsive overflow, and visual regression against stored baselines (pixel diff). Returns findings with decision envelopes. Set updateBaseline:true to approve the current look.",
   {
@@ -320,7 +345,7 @@ function loadEmailConfig(): EmailConfig | undefined {
   }
 }
 
-server.tool(
+registerTool(
   "argus_email_link",
   "Read the newest link the app emailed to an address — the missing piece for signup-verification, password-reset and magic-link flows. Reads the app's own outbox table (configure .argus/config.json → email), so no real inbox is involved. Returns the link to drive with argus_act goto.",
   {
@@ -464,7 +489,7 @@ function saveFlow(flow: Flow): string {
   return file;
 }
 
-server.tool(
+registerTool(
   "argus_record",
   "Start or stop recording on a session. While recording, every successful argus_act is captured as a semantic-anchored flow step (testid → role+name → text — never volatile refs). stop returns the recorded steps; then call argus_flow_save with success predicates to persist the flow.",
   {
@@ -482,7 +507,7 @@ server.tool(
     )
 );
 
-server.tool(
+registerTool(
   "argus_flow_save",
   "Persist a flow to .argus/flows/<name>.json (git-reviewed, replayable forever). Provide the steps (usually from argus_record stop, optionally with per-step expect predicates added) and the success predicates — the golden end condition, ideally network/route consequences rather than DOM presence.",
   {
@@ -527,7 +552,7 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "argus_flow_list",
   "List the flows saved in .argus/flows/.",
   {},
@@ -541,7 +566,7 @@ server.tool(
     )
 );
 
-server.tool(
+registerTool(
   "argus_flow_replay",
   "Deterministically replay one saved flow in the cloud (no model). Returns ok / drift / error with a decision envelope: what changed, the nearest surviving anchor, and the next action.",
   { name: z.string() },
@@ -552,7 +577,7 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "argus_flow_verify",
   "Replay EVERY saved flow (or a named subset) in parallel in the cloud — the regression check to run after any change. Returns one consolidated verdict; only failures carry detail. Pass baseUrl to run the same suite against another environment (a version-preview or staging URL) without editing any flow file. Login flows run first so authenticated flows never race a missing profile.",
   {
@@ -574,7 +599,7 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "argus_flow_heal",
   "Propose (apply:false, default) or apply (apply:true) nearest-match anchor rebinds for a drifted flow. Proposals come from replaying against the live page; apply rewrites .argus/flows/<name>.json.",
   { name: z.string(), apply: z.boolean().optional() },
@@ -599,7 +624,7 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "argus_flow_import_reticle",
   "Import flows from a Reticle workspace (.reticle/flows/*.json) into .argus/flows/. Maps testid/role anchors and success conditions; signal-based predicates (which need Reticle's in-app SDK) are converted to console-clean guards with a warning.",
   { startUrl: z.string().url().describe("the app URL these flows run against") },
@@ -719,6 +744,17 @@ server.tool(
     }
     return jsonResult({ imported, warnings });
   }
+);
+
+registerTool(
+  "argus_tools",
+  "List every argus tool with its purpose and whether it actually returns a verdict (only argus_assert and the flow runners do — argus_act only moves the app). Call this once to see the whole surface cheaply instead of reading every tool description.",
+  {},
+  async () =>
+    jsonResult({
+      tools: TOOL_CATALOG,
+      note: "Only tools with yieldsVerdict: true produce pass/fail evidence.",
+    })
 );
 
 const transport = new StdioServerTransport();

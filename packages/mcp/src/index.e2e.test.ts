@@ -44,6 +44,7 @@ describe("MCP executable", () => {
           "argus_flow_heal",
           "argus_flow_import_reticle",
           "argus_audit",
+          "argus_tools",
         ])
       );
       // Any MCP client — not just Claude Code — gets the lifecycle guidance

@@ -41,11 +41,10 @@ importers:
         version: 6.4.3(@types/node@22.20.1)
 
   packages/cli:
-    dependencies:
+    devDependencies:
       '@argus/shared':
         specifier: workspace:*
         version: link:../shared
-    devDependencies:
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.1
@@ -117,9 +116,6 @@ importers:
 
   packages/mcp:
     dependencies:
-      '@argus/shared':
-        specifier: workspace:*
-        version: link:../shared
       '@modelcontextprotocol/sdk':
         specifier: ^1.12.0
         version: 1.30.0(zod@3.25.76)
@@ -127,6 +123,9 @@ importers:
         specifier: ^3.24.0
         version: 3.25.76
     devDependencies:
+      '@argus/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.1
