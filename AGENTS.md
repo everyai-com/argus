@@ -1,8 +1,10 @@
 # Argus — agent notes
 
-Canonical agent file for this repo. Any harness that reads `AGENTS.md` (Codex,
-Cursor, Copilot, Gemini CLI, Zed, Cline, Windsurf, …) gets it directly; Claude
-Code imports it through `CLAUDE.md` (`@AGENTS.md`).
+Canonical agent file for this repo. Harnesses that read `AGENTS.md` natively
+(Codex, Cursor, Copilot, Zed, Amp, opencode, Windsurf, Aider — the list lives at
+[agents.md](https://agents.md)) get it directly; Claude Code imports it through
+`CLAUDE.md` (`@AGENTS.md`), and Gemini CLI reads it once `.gemini/settings.json`
+sets `context.fileName` (what `argus init` writes).
 
 Cloud verification platform. Monorepo: `packages/shared` (zod wire contract —
 every cross-boundary schema lives here, both sides import it), `packages/cloud`
@@ -63,9 +65,9 @@ dashboard hosting), `packages/cli`, `packages/mcp`, `packages/dashboard`,
 
 The MCP server (`packages/mcp`) is plain stdio and works with any MCP client. The
 per-harness wiring lives in `packages/cli/src/harness.ts` — it is the single source
-of truth for `.mcp.json`, `.cursor/mcp.json`, `.vscode/mcp.json`, `AGENTS.md` and
-the Codex TOML snippet. Add a new harness there, not inline in `init`. See
-`docs/harness-support.md` for the full matrix.
+of truth for `.mcp.json`, `.cursor/mcp.json`, `.vscode/mcp.json`,
+`.gemini/settings.json`, `AGENTS.md` and the Codex TOML snippet. Add a new harness
+there, not inline in `init`. See `docs/harness-support.md` for the full matrix.
 
 ## Gotchas
 
