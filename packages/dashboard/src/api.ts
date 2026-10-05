@@ -92,7 +92,7 @@ export function useCapacity(
   const [cap, setCap] = useState<Capacity>();
   const [error, setError] = useState<string>();
   const [rates, setRates] = useState({ acquires: 0, rejects: 0 });
-  const prev = useRef<{ c: Capacity["cumulative"]; t: number }>();
+  const prev = useRef<{ c: Capacity["cumulative"]; t: number } | undefined>(undefined);
   const [nonce, setNonce] = useState(0);
   const reload = useCallback(() => setNonce((n) => n + 1), []);
 

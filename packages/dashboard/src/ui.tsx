@@ -230,7 +230,7 @@ export function useFilter<T>(
   query: string;
   setQuery: (q: string) => void;
   filtered: T[];
-  ref: React.RefObject<HTMLInputElement>;
+  ref: React.RefObject<HTMLInputElement | null>;
 } {
   const [query, setQuery] = useState("");
   const ref = useRef<HTMLInputElement>(null);

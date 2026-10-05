@@ -272,6 +272,7 @@ describe("remote MCP endpoint", () => {
     type SchemaNode = {
       required?: string[];
       anyOf?: unknown[];
+      oneOf?: unknown[];
       items?: SchemaNode;
       properties?: Record<string, SchemaNode>;
     };
@@ -297,12 +298,17 @@ describe("remote MCP endpoint", () => {
     // A step IS an action (its `action` field is the discriminant), never a wrapper around one.
     const act = byName.get("argus_act")!;
     expect(act.required).toEqual(expect.arrayContaining(["sessionId", "step"]));
-    expect(act.properties?.step?.anyOf).toBeDefined();
+    // Unions render as anyOf (zod 3) or oneOf (zod 4) — either proves the
+    // step is a discriminated union of actions rather than a wrapper.
+    expect(act.properties?.step?.anyOf ?? act.properties?.step?.oneOf).toBeDefined();
     expect(act.properties?.action).toBeUndefined();
 
     const batch = byName.get("argus_act_batch")!;
-    expect(batch.properties?.steps?.items?.anyOf).toBeDefined();
-    expect(batch.properties?.steps?.items?.properties?.action?.anyOf).toBeUndefined();
+    expect(batch.properties?.steps?.items?.anyOf ?? batch.properties?.steps?.items?.oneOf).toBeDefined();
+    expect(
+      batch.properties?.steps?.items?.properties?.action?.anyOf ??
+        batch.properties?.steps?.items?.properties?.action?.oneOf
+    ).toBeUndefined();
 
     // Wire-shaped arguments must reach the API (which answers not_found for an unknown
     // session) instead of failing input validation at the MCP layer.
