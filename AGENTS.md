@@ -58,6 +58,13 @@ dashboard hosting), `packages/cli`, `packages/mcp`, `packages/dashboard`,
   client-routed SPA answers 200 for every path, so status-based probing
   generates flows for non-existent routes that then "pass" against the
   not-found page (a false green — this bug was real, see preset.ts).
+- The two MCP surfaces must not drift: `packages/cloud/src/mcp.ts` (remote, by URL)
+  and `packages/mcp/src/index.ts` (stdio) expose the same tools — same required
+  params and same JSON shape per shared param (a param only one side offers must be
+  optional; descriptions may differ). Never wrap a `packages/shared` schema in an
+  extra object on one side: `argus_act` shipped as `action: ActionSchema` (double
+  `action.action`) so the only input MCP accepted was one `/v1` rejects — every call
+  failed. `packages/cloud/src/mcp-parity.e2e.test.ts` enforces this.
 
 ## Harness support
 

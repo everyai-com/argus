@@ -1,631 +1,372 @@
 /**
- * Argus dashboard — run history, findings inbox with copy-as-prompt,
- * screenshots, visual diffs, and the live session fleet. Served by the same
- * worker that runs the tests; auto-refreshes so runs appear as they land.
+ * Argus console — rail navigation, the live horizon strip, and view routing.
+ * The strip is the product's pulse: fleet headroom, live sessions, the newest
+ * verdict, and how fresh this screen is.
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { AccountView } from "./Account";
+import { GitHubView } from "./Platform";
+import { CapacityView, SessionsView } from "./Ops";
+import { FleetView, RunDetail, RunsView } from "./Runs";
+import { apiGet, useCapacity, useToken, type ProjectRow, type RunRow, type SessionRow } from "./api";
+import { Empty, Mark, Meter, Skeleton, Sparkbars, timeAgo, until, useNow, Verdict } from "./ui";
 
-// ---------------------------------------------------------------------------
-// API helpers — the token is kept in localStorage and sent as a header;
-// artifact images are fetched with the header and shown via blob URLs.
-// ---------------------------------------------------------------------------
+type Tab = "fleet" | "runs" | "sessions" | "capacity" | "github" | "account";
 
-function useToken(): [string, (t: string) => void] {
-  const [token, setToken] = useState(() => localStorage.getItem("argus-token") ?? "");
-  return [
-    token,
-    (t: string) => {
-      localStorage.setItem("argus-token", t);
-      setToken(t);
-    },
-  ];
+const TABS: Array<{ id: Tab; label: string; group: string; blurb: string }> = [
+  { id: "fleet", label: "Fleet", group: "Observe", blurb: "Latest verdict per project — the board you scan first." },
+  { id: "runs", label: "Runs", group: "Observe", blurb: "Every verification run this tenant has produced, newest first." },
+  { id: "sessions", label: "Sessions", group: "Observe", blurb: "Live cloud browsers, their lease clocks, and how to free a slot." },
+  { id: "capacity", label: "Capacity", group: "Operate", blurb: "Saturation, launch queue, and per-tenant reserved floors." },
+  { id: "github", label: "GitHub", group: "Operate", blurb: "Verification posted onto pull requests." },
+  { id: "account", label: "Account", group: "Account", blurb: "Create an account, mint the token your agent connects with." },
+];
+
+interface ApiError {
+  status?: number;
+  message: string;
 }
 
-async function apiGet(token: string, path: string): Promise<any> {
-  const res = await fetch(path, {
-    headers: token ? { authorization: `Bearer ${token}` } : {},
-  });
-  if (!res.ok) throw new Error(`${res.status} ${await res.text().catch(() => "")}`.slice(0, 200));
-  return res.json();
+/** "Error: 401 {"error":"unauthorized"}" → { status: 401, message: '{"error":"unauthorized"}' } */
+function readApiError(reason: unknown): ApiError {
+  const text = String(reason instanceof Error ? reason.message : reason).replace(/^Error:\s*/, "");
+  const match = /^(\d{3})\s*([\s\S]*)$/.exec(text);
+  return match ? { status: Number(match[1]), message: (match[2] ?? "").trim() || text } : { message: text };
 }
 
-function ArtifactImg({ token, src, alt }: { token: string; src: string; alt: string }) {
-  const [url, setUrl] = useState<string>();
-  const [err, setErr] = useState(false);
-  useEffect(() => {
-    let revoke: string | undefined;
-    let cancelled = false;
-    fetch(src, { headers: token ? { authorization: `Bearer ${token}` } : {} })
-      .then((r) => (r.ok ? r.blob() : Promise.reject(new Error(String(r.status)))))
-      .then((b) => {
-        if (cancelled) return;
-        revoke = URL.createObjectURL(b);
-        setUrl(revoke);
-      })
-      .catch(() => setErr(true));
-    return () => {
-      cancelled = true;
-      if (revoke) URL.revokeObjectURL(revoke);
-    };
-  }, [src, token]);
-  if (err) return <div className="label">⚠ could not load</div>;
-  if (!url) return <div className="label">loading…</div>;
-  return <img src={url} alt={alt} />;
-}
-
-function GitHubView(): React.ReactElement {
-  const [status, setStatus] = useState<{ configured: boolean; installUrl?: string; checkName: string }>();
-  const [error, setError] = useState<string>();
-  useEffect(() => {
-    fetch("/platform/github/status")
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`GitHub platform status: ${response.status}`);
-        return response.json();
-      })
-      .then(setStatus)
-      .catch((reason) => setError(String(reason)));
-  }, []);
-  if (error) return <div className="empty">{error}</div>;
-  if (!status) return <div className="empty">checking GitHub App…</div>;
-  return (
-    <div>
-      <div className="card platform-hero">
-        <span className={`badge ${status.configured ? "pass" : "major"}`}>
-          {status.configured ? "ready" : "setup required"}
-        </span>
-        <h2>Automatic verification for every pull request</h2>
-        <p className="muted">
-          Install Argus on selected repositories. Each PR receives one rich GitHub Check with cloud-browser
-          smoke tests, accessibility and performance audits, visual diffs, and committed flow replays.
-        </p>
-        {status.installUrl ? (
-          <a className="primary" href={status.installUrl}>
-            Connect GitHub
-          </a>
-        ) : (
-          <p className="muted small">Set the GitHub App slug to enable repository installation.</p>
-        )}
-      </div>
-      <div className="card">
-        <strong>Repository configuration</strong>
-        <p className="muted small">
-          Commit <code className="k">.argus/platform.json</code>. Credentials never belong in this file.
-        </p>
-        <pre className="config-example">{`{
-  "deployment": { "environments": ["Preview"] },
-  "checks": ["smoke", "audit", "flows"],
-  "viewports": ["mobile", "desktop"],
-  "flowConcurrency": 3
-}`}</pre>
-        <p className="muted small">
-          Argus starts when GitHub receives a successful HTTPS preview deployment. For a stable staging site,
-          replace <code className="k">deployment</code> with <code className="k">targetUrl</code>.
-        </p>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-
-interface RunRow {
-  runId: string;
-  kind: string;
-  at: string;
-  artifacts: number;
-}
-
-interface Finding {
-  id: string;
-  severity: string;
-  category: string;
-  summary: string;
-  detail?: string;
-  evidence?: { screenshotKey?: string; viewport?: string };
-  decision?: { whatChanged: string; whereInSource?: string; nextAction: string };
-}
-
-function findingToPrompt(f: Finding, url?: string): string {
-  return [
-    `Fix this issue found by Argus verification${url ? ` on ${url}` : ""}:`,
-    `- Problem: ${f.summary}`,
-    f.detail ? `- Detail: ${f.detail}` : undefined,
-    f.decision ? `- What changed: ${f.decision.whatChanged}` : undefined,
-    f.decision?.whereInSource ? `- Where: ${f.decision.whereInSource}` : undefined,
-    f.decision ? `- Suggested next action: ${f.decision.nextAction}` : undefined,
-    `After fixing, re-run the Argus check to verify the fix (argus_flow_verify or argus audit).`,
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
-function FindingCard({ f, url }: { f: Finding; url?: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <div className={`finding ${f.severity}`}>
-      <div className="row">
-        <span className={`badge ${f.severity}`}>{f.severity}</span>
-        <span className="badge kind">{f.category}</span>
-        <span>{f.summary}</span>
-        <span style={{ flex: 1 }} />
-        <button
-          className="mini"
-          onClick={() => {
-            navigator.clipboard.writeText(findingToPrompt(f, url)).then(() => {
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1500);
-            });
-          }}
-        >
-          {copied ? "copied ✓" : "copy fix prompt"}
-        </button>
-      </div>
-      {f.decision && <div className="next">→ {f.decision.nextAction}</div>}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Capacity — live fleet telemetry: browsers vs cap, warm pool, launch queue,
-// per-tenant used/reserved/burst, and throughput rates derived from successive
-// polls of the cumulative counters.
-// ---------------------------------------------------------------------------
-
-interface Capacity {
-  active: number;
-  cap: number;
-  warm: number;
-  warmCap: number;
-  launchQueueMs: number;
-  reservedTotal: number;
-  cumulative: { acquires: number; rejects: number; launches: number; releases: number };
-  since: string;
-  tenants: Array<{ id: string; name: string; active: number; reserved: number; maxBurst: number; disabled?: boolean }>;
-}
-
-function Gauge({
-  label,
-  used,
-  total,
-  hint,
-  tone = "load",
-}: {
-  label: string;
-  used: number;
-  total: number;
-  hint?: string;
-  /** "load" escalates blue→amber→red as it fills (near cap = attention); "pool"
-   *  stays blue because a FULL warm pool is healthy, not a warning. */
-  tone?: "load" | "pool";
-}) {
-  const pct = total > 0 ? Math.min(100, (used / total) * 100) : 0;
-  const cls = tone === "pool" ? "fill" : pct >= 90 ? "fill hot" : pct >= 60 ? "fill warm" : "fill";
-  return (
-    <div className="gauge">
-      <div className="glabel">
-        <span>{label}</span>
-        <span className="muted">
-          {used}/{total}
-          {hint ? ` · ${hint}` : ""}
-        </span>
-      </div>
-      <div className="track">
-        <div className={cls} style={{ width: `${pct}%` }} />
-      </div>
-    </div>
-  );
-}
-
-function CapacityView({ token }: { token: string }) {
-  const [cap, setCap] = useState<Capacity>();
-  const [error, setError] = useState<string>();
-  const prev = React.useRef<{ c: Capacity["cumulative"]; t: number }>();
-  const [rates, setRates] = useState<{ acquires: number; rejects: number }>({ acquires: 0, rejects: 0 });
-
-  useEffect(() => {
-    let live = true;
-    const tick = () => {
-      apiGet(token, "/v1/capacity")
-        .then((d: Capacity) => {
-          if (!live) return;
-          const now = Date.now();
-          if (prev.current) {
-            const dt = (now - prev.current.t) / 1000;
-            if (dt > 0)
-              setRates({
-                acquires: Math.max(0, (d.cumulative.acquires - prev.current.c.acquires) / dt),
-                rejects: Math.max(0, (d.cumulative.rejects - prev.current.c.rejects) / dt),
-              });
-          }
-          prev.current = { c: d.cumulative, t: now };
-          setCap(d);
-          setError(undefined);
-        })
-        .catch((e) => live && setError(String(e)));
-    };
-    tick();
-    const iv = setInterval(tick, 2000);
-    return () => {
-      live = false;
-      clearInterval(iv);
-    };
-  }, [token]);
-
-  if (error) return <div className="empty">{error}</div>;
-  if (!cap) return <div className="empty">loading capacity…</div>;
-
-  return (
-    <div>
-      <div className="card">
-        <div className="row">
-          <strong>Fleet</strong>
-          <span className="muted small">
-            {cap.active} of {cap.cap} browsers in use · {cap.reservedTotal} reserved across tenants
-          </span>
-          <span style={{ flex: 1 }} />
-          <span className={`badge ${cap.active >= cap.cap ? "fail" : "pass"}`}>
-            {cap.active >= cap.cap ? "saturated" : "headroom"}
-          </span>
-        </div>
-        <Gauge label="Concurrent browsers" used={cap.active} total={cap.cap} />
-        <Gauge label="Warm pool (reconnect-ready)" used={cap.warm} total={cap.warmCap} tone="pool" />
-        <div className="statgrid">
-          <div className="stat">
-            <div className="n">{cap.launchQueueMs}ms</div>
-            <div className="k">launch queue</div>
-          </div>
-          <div className="stat">
-            <div className="n rate">{rates.acquires.toFixed(1)}/s</div>
-            <div className="k">acquire rate</div>
-          </div>
-          <div className="stat">
-            <div className="n rate">{rates.rejects.toFixed(1)}/s</div>
-            <div className="k">429 rate</div>
-          </div>
-          <div className="stat">
-            <div className="n">{cap.cumulative.launches}</div>
-            <div className="k">cold launches</div>
-          </div>
-          <div className="stat">
-            <div className="n">{cap.cumulative.acquires}</div>
-            <div className="k">total acquires</div>
-          </div>
-          <div className="stat">
-            <div className="n">{cap.cumulative.releases}</div>
-            <div className="k">total releases</div>
-          </div>
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="row">
-          <strong>Tenants</strong>
-          <span className="muted small">used / burst ceiling · dashed line = reserved floor</span>
-        </div>
-        {cap.tenants.length === 0 ? (
-          <p className="muted small">
-            no tenants yet — the admin token holds all leases. Create one with{" "}
-            <code className="k">argus tenants create &lt;id&gt; --reserved 5</code>
-          </p>
-        ) : (
-          cap.tenants.map((t) => {
-            const pct = t.maxBurst > 0 ? Math.min(100, (t.active / t.maxBurst) * 100) : 0;
-            const resPct = t.maxBurst > 0 ? Math.min(100, (t.reserved / t.maxBurst) * 100) : 0;
-            const cls = pct >= 90 ? "fill hot" : pct >= 60 ? "fill warm" : "fill";
-            return (
-              <div className="tenantrow" key={t.id}>
-                <div className="tname">
-                  <span>
-                    <code className="k">{t.id}</code>{" "}
-                    <span className="muted">{t.name}</span>
-                    {t.disabled ? <span className="badge fail" style={{ marginLeft: 6 }}>disabled</span> : null}
-                  </span>
-                  <span className="muted">
-                    {t.active}/{t.maxBurst} · reserved {t.reserved}
-                  </span>
-                </div>
-                <div className="track">
-                  <div className={cls} style={{ width: `${pct}%` }} />
-                  {t.reserved > 0 && <div className="reserved" style={{ left: `${resPct}%` }} />}
-                </div>
-              </div>
-            );
-          })
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-
-function RunDetail({ token, runId, onBack }: { token: string; runId: string; onBack: () => void }) {
-  const [data, setData] = useState<any>();
-  const [error, setError] = useState<string>();
-  useEffect(() => {
-    apiGet(token, `/v1/run/${runId}`).then(setData).catch((e) => setError(String(e)));
-  }, [runId, token]);
-
-  if (error) return <div className="empty">{error}</div>;
-  if (!data) return <div className="empty">loading run…</div>;
-
-  const report = data.audit_report ?? data.report;
-  const flows = data.flows_verdict;
-
-  return (
-    <div>
-      <p>
-        <a className="back" onClick={onBack}>
-          ← runs
-        </a>
-      </p>
-      {report && (
-        <div className="card">
-          <div className="row">
-            <span className={`badge ${report.status}`}>{report.status}</span>
-            <strong>{report.url}</strong>
-            <span className="muted small">
-              {report.startedAt} · {(report.durationMs / 1000).toFixed(1)}s
-            </span>
-          </div>
-          {report.perf?.length > 0 && (
-            <p className="small muted">
-              {report.perf
-                .map(
-                  (p: any) =>
-                    `${p.viewport}: FCP ${p.fcpMs ?? "?"}ms · LCP ${p.lcpMs ?? "?"}ms · CLS ${p.cls ?? "?"}`
-                )
-                .join("  ·  ")}
-            </p>
-          )}
-          {report.findings?.length > 0 ? (
-            <>
-              <h3>Findings ({report.findings.length})</h3>
-              {report.findings.map((f: Finding) => (
-                <FindingCard key={f.id} f={f} url={report.url} />
-              ))}
-            </>
-          ) : (
-            <p className="muted">No findings — clean run. ✓</p>
-          )}
-          {report.visual?.some((v: any) => v.status === "diff") && (
-            <>
-              <h3>Visual diffs</h3>
-              {report.visual
-                .filter((v: any) => v.status === "diff")
-                .map((v: any) => (
-                  <div key={v.currentKey}>
-                    <p className="small muted">
-                      {v.viewport}/{v.colorScheme} — {(v.diffRatio * 100).toFixed(1)}% changed
-                      (baseline · current · diff)
-                    </p>
-                    <div className="difftriplet">
-                      <div className="shot">
-                        <ArtifactImg token={token} src={`/v1/artifact/${v.baselineKey}`} alt="baseline" />
-                      </div>
-                      <div className="shot">
-                        <ArtifactImg token={token} src={`/v1/artifact/${v.currentKey}`} alt="current" />
-                      </div>
-                      <div className="shot">
-                        <ArtifactImg token={token} src={`/v1/artifact/${v.diffKey}`} alt="diff" />
-                      </div>
-                    </div>
-                  </div>
-                ))}
-            </>
-          )}
-          {report.screenshots?.length > 0 && (
-            <>
-              <h3>Screenshots</h3>
-              <div className="grid">
-                {report.screenshots.map((s: any) => (
-                  <div className="shot" key={s.key}>
-                    <ArtifactImg token={token} src={`/v1/artifact/${s.key}`} alt={s.viewport} />
-                    <div className="label">
-                      {s.viewport} / {s.colorScheme}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
-      )}
-      {flows && (
-        <div className="card">
-          <div className="row">
-            <span className={`badge ${flows.status}`}>{flows.status}</span>
-            <strong>flow suite</strong>
-            <span className="muted">{flows.summary}</span>
-          </div>
-          {flows.results?.map((r: any) => (
-            <div key={r.flow} className={`finding ${r.status === "ok" ? "info" : "critical"}`}>
-              <div className="row">
-                <span className={`badge ${r.status === "ok" ? "pass" : r.status}`}>{r.status}</span>
-                <code className="k">{r.flow}</code>
-                <span className="muted small">
-                  {r.stepsRun} steps · {(r.durationMs / 1000).toFixed(1)}s
-                  {r.evidenceTier ? ` · evidence: ${r.evidenceTier}` : ""}
-                </span>
-              </div>
-              {r.decision && (
-                <div className="next">
-                  {r.decision.whatChanged} → {r.decision.nextAction}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-      {!report && !flows && <div className="empty">no report artifacts in this run</div>}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
+const params = () => new URLSearchParams(location.search);
+const tabFromUrl = (): Tab | undefined => {
+  const t = params().get("tab");
+  return TABS.some((x) => x.id === t) ? (t as Tab) : undefined;
+};
+const runFromUrl = (): string | undefined => params().get("run") ?? undefined;
 
 export function App(): React.ReactElement {
   const [token, setToken] = useToken();
-  const [tab, setTab] = useState<"fleet" | "runs" | "sessions" | "capacity" | "github" | "account">("account");
-  const [runs, setRuns] = useState<RunRow[]>([]);
-  const [sessions, setSessions] = useState<any[]>([]);
-  const [fleet, setFleet] = useState<any[]>([]);
-  const [selected, setSelected] = useState<string | undefined>(
-    () => new URLSearchParams(location.search).get("run") ?? undefined
+  const [tab, setTab] = useState<Tab>(
+    () => tabFromUrl() ?? (localStorage.getItem("argus-token") ? "fleet" : "account")
   );
-  const [error, setError] = useState<string>();
+  const [selected, setSelected] = useState<string | undefined>(runFromUrl);
+  const [runs, setRuns] = useState<RunRow[]>([]);
+  const [sessions, setSessions] = useState<SessionRow[]>([]);
+  const [fleet, setFleet] = useState<ProjectRow[]>([]);
+  const [error, setError] = useState<ApiError>();
+  const [loaded, setLoaded] = useState(false);
+  const [live, setLive] = useState(true);
+  const [updatedAt, setUpdatedAt] = useState<number>();
+
+  const now = useNow(1000);
+  const { cap, rates, error: capError, reload: reloadCapacity } = useCapacity(token, live && Boolean(token));
 
   const refresh = useCallback(() => {
     if (!token) return;
-    apiGet(token, "/v1/runs")
-      .then((d) => {
-        setRuns(d.runs);
+    Promise.allSettled([
+      apiGet<{ runs: RunRow[] }>(token, "/v1/runs"),
+      apiGet<{ sessions: SessionRow[] }>(token, "/v1/sessions"),
+      apiGet<{ projects: ProjectRow[] }>(token, "/v1/fleet"),
+    ]).then(([r, s, f]) => {
+      if (r.status === "fulfilled") {
+        setRuns(r.value.runs);
         setError(undefined);
-      })
-      .catch((e) => setError(String(e)));
-    apiGet(token, "/v1/sessions")
-      .then((d) => setSessions(d.sessions))
-      .catch(() => {});
-    apiGet(token, "/v1/fleet")
-      .then((d) => setFleet(d.projects))
-      .catch(() => {});
+      } else {
+        setError(readApiError(r.reason));
+      }
+      if (s.status === "fulfilled") setSessions(s.value.sessions);
+      if (f.status === "fulfilled") setFleet(f.value.projects);
+      setLoaded(true);
+      setUpdatedAt(Date.now());
+    });
   }, [token]);
 
   useEffect(() => {
     refresh();
-    const t = setInterval(refresh, 8000); // live-ish: runs appear as they land
+    if (!live) return;
+    const t = setInterval(refresh, 8000);
     return () => clearInterval(t);
-  }, [refresh]);
+  }, [refresh, live]);
+
+  useEffect(() => {
+    const query = new URLSearchParams();
+    if (tab !== "fleet") query.set("tab", tab);
+    if (selected) query.set("run", selected);
+    const q = query.toString();
+    history.replaceState(null, "", q ? `?${q}` : location.pathname);
+  }, [tab, selected]);
+
+  useEffect(() => {
+    const onPop = () => {
+      setTab(tabFromUrl() ?? "fleet");
+      setSelected(runFromUrl());
+    };
+    addEventListener("popstate", onPop);
+    return () => removeEventListener("popstate", onPop);
+  }, []);
+
+  const open = (next: Tab, run?: string) => {
+    setTab(next);
+    setSelected(run);
+  };
+
+  const groups = useMemo(() => {
+    const out: Array<{ name: string; items: typeof TABS }> = [];
+    for (const entry of TABS) {
+      const group = out.find((g) => g.name === entry.group);
+      if (group) group.items.push(entry);
+      else out.push({ name: entry.group, items: [entry] });
+    }
+    return out;
+  }, []);
+
+  const counts: Partial<Record<Tab, number>> = {
+    fleet: fleet.length,
+    runs: runs.length,
+    sessions: sessions.length,
+  };
+
+  const newest = useMemo(
+    () =>
+      [...fleet]
+        .filter((p) => p.latest?.at)
+        .sort((a, b) => Date.parse(b.latest.at!) - Date.parse(a.latest.at!))[0],
+    [fleet]
+  );
+  const sessionsDue = useMemo(
+    () => sessions.map((s) => s.expiresAt).sort((a, b) => Date.parse(a) - Date.parse(b))[0],
+    [sessions]
+  );
+  const { buckets, labels, runsToday } = useMemo(() => {
+    const slots = 24;
+    const nowMs = Date.now();
+    const hour = 60 * 60 * 1000;
+    const values = new Array(slots).fill(0) as number[];
+    const labelList: string[] = [];
+    for (let i = slots; i > 0; i--) {
+      const start = new Date(nowMs - i * hour);
+      labelList.push(start.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+    }
+    for (const r of runs) {
+      if (!r.at) continue;
+      const age = nowMs - Date.parse(r.at);
+      if (age < 0 || age >= slots * hour) continue;
+      values[slots - 1 - Math.floor(age / hour)] = (values[slots - 1 - Math.floor(age / hour)] ?? 0) + 1;
+    }
+    return { buckets: values, labels: labelList, runsToday: runs.length ? values.reduce((a, b) => a + b, 0) : 0 };
+  }, [runs]);
+
+  const active = TABS.find((t) => t.id === tab)!;
+  const needsToken = tab !== "account" && tab !== "github";
 
   const body = useMemo(() => {
     if (tab === "account") return <AccountView onToken={setToken} />;
     if (tab === "github") return <GitHubView />;
     if (!token)
       return (
-        <div className="empty">
-          Paste your Argus API token above to connect, or open the{" "}
-          <strong>Account</strong> tab to create one. <br />
-          <span className="small">(it's in .argus/config.json in your project)</span>
-        </div>
+        <Empty title="Connect with an API token">
+          The console reads your tenant's runs, sessions and flows.
+          <div className="hint">
+            <button className="btn primary" onClick={() => open("account")}>
+              Open Account
+            </button>
+            <span className="dim">or paste a token from the rail</span>
+          </div>
+        </Empty>
       );
     if (selected) return <RunDetail token={token} runId={selected} onBack={() => setSelected(undefined)} />;
-    if (tab === "capacity") return <CapacityView token={token} />;
-    if (tab === "fleet")
-      return fleet.length === 0 ? (
-        <div className="empty">
-          no tagged runs yet — run <code className="k">argus test</code> or{" "}
-          <code className="k">argus audit</code> inside a project
-        </div>
-      ) : (
-        fleet.map((p) => (
-          <div
-            className="card clickable"
-            key={p.project}
-            role="button"
-            tabIndex={0}
-            onClick={() => setSelected(p.latest.runId)}
-            onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setSelected(p.latest.runId)}
-          >
-            <div className="row">
-              <span className={`badge ${p.latest.status}`}>{p.latest.status}</span>
-              <strong>{p.project}</strong>
-              <span className="badge kind">{p.latest.kind}</span>
-              <span className="muted small">{p.latest.url}</span>
-              <span style={{ flex: 1 }} />
-              <span className="muted small">
-                {p.failing > 0 ? `${p.failing}/${p.runs} runs failing` : `${p.runs} runs, all green`}
-              </span>
-              <span className="muted small">
-                {p.latest.at ? new Date(p.latest.at).toLocaleString() : ""}
-              </span>
-            </div>
-          </div>
-        ))
-      );
+    if (!loaded) return <Skeleton rows={4} />;
+    if (tab === "capacity")
+      return <CapacityView cap={cap} rates={rates} error={capError} live={live} onRetry={reloadCapacity} />;
     if (tab === "sessions")
-      return sessions.length === 0 ? (
-        <div className="empty">no active browser sessions</div>
-      ) : (
-        sessions.map((s) => (
-          <div className="card" key={s.sessionId}>
-            <div className="row">
-              <code className="k">{s.sessionId}</code>
-              <span>{s.url}</span>
-              <span className="badge kind">{s.label ?? "unlabeled"}</span>
-              <span className="muted small">expires {new Date(s.expiresAt).toLocaleTimeString()}</span>
-            </div>
-          </div>
-        ))
-      );
-    return runs.length === 0 ? (
-      <div className="empty">
-        no runs yet — try <code className="k">argus test &lt;url&gt;</code>
-      </div>
-    ) : (
-      runs.map((r) => (
-        <div
-          className="card clickable"
-          key={r.runId}
-          role="button"
-          tabIndex={0}
-          aria-label={`open run ${r.runId}`}
-          onClick={() => setSelected(r.runId)}
-          onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setSelected(r.runId)}
-        >
-          <div className="row">
-            <code className="k">{r.runId}</code>
-            <span className="badge kind">{r.kind}</span>
-            <span className="muted small">{r.at ? new Date(r.at).toLocaleString() : ""}</span>
-            <span style={{ flex: 1 }} />
-            <span className="muted small">{r.artifacts} artifacts</span>
-          </div>
-        </div>
-      ))
-    );
-  }, [token, selected, tab, runs, sessions, fleet]);
+      return <SessionsView token={token} sessions={sessions} onChanged={refresh} now={now} />;
+    if (tab === "fleet") return <FleetView projects={fleet} onOpen={(runId) => setSelected(runId)} now={now} />;
+    return <RunsView runs={runs} onOpen={(runId) => setSelected(runId)} now={now} />;
+  }, [tab, token, selected, loaded, cap, rates, capError, live, reloadCapacity, sessions, refresh, now, fleet, runs]);
 
   return (
-    <div className="app">
-      <header className="top">
-        <h1>👁 Argus</h1>
-        <nav className="tabs">
-          <button
-            className={tab === "fleet" && !selected ? "active" : ""}
-            onClick={() => {
-              setTab("fleet");
-              setSelected(undefined);
-            }}
-          >
-            Fleet {fleet.length > 0 ? `(${fleet.length})` : ""}
-          </button>
-          <button className={tab === "runs" && !selected ? "active" : ""} onClick={() => { setTab("runs"); setSelected(undefined); }}>
-            Runs
-          </button>
-          <button className={tab === "sessions" ? "active" : ""} onClick={() => { setTab("sessions"); setSelected(undefined); }}>
-            Sessions {sessions.length > 0 ? `(${sessions.length})` : ""}
-          </button>
-          <button className={tab === "capacity" && !selected ? "active" : ""} onClick={() => { setTab("capacity"); setSelected(undefined); }}>
-            Capacity
-          </button>
-          <button className={tab === "github" && !selected ? "active" : ""} onClick={() => { setTab("github"); setSelected(undefined); }}>
-            GitHub
-          </button>
-          <button className={tab === "account" && !selected ? "active" : ""} onClick={() => { setTab("account"); setSelected(undefined); }}>
-            Account
-          </button>
-        </nav>
-        <span className="spacer" />
-        <input
-          className="token"
-          type="password"
-          placeholder="API token"
-          value={token}
-          onChange={(e) => setToken(e.target.value)}
-        />
-      </header>
-      {error && <div className="card" style={{ borderColor: "#f87171" }}>{error}</div>}
-      {body}
-    </div>
+    <>
+      <a className="skip" href="#content">
+        Skip to content
+      </a>
+      <div className="shell">
+        <aside className="rail">
+          <div className="brand">
+            <Mark size={20} />
+            <span>
+              <span className="name">Argus</span>
+              <span className="sub">browser verification</span>
+            </span>
+          </div>
+
+          <nav className="rail-nav" aria-label="Sections">
+            {groups.map((group) => (
+              <div className="navgroup" key={group.name}>
+                <span className="navgroup-label micro">{group.name}</span>
+                {group.items.map((item) => (
+                  <button
+                    key={item.id}
+                    className="navbtn"
+                    aria-current={tab === item.id && !selected ? "true" : "false"}
+                    onClick={() => open(item.id)}
+                  >
+                    {item.label}
+                    {token && counts[item.id] ? <span className="count num">{counts[item.id]}</span> : null}
+                  </button>
+                ))}
+              </div>
+            ))}
+          </nav>
+
+          <div className="rail-foot">
+            <div className="field">
+              <label className="micro" htmlFor="argus-token">
+                API token
+              </label>
+              <input
+                id="argus-token"
+                className="input"
+                type="password"
+                value={token}
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="argus_…"
+                onChange={(e) => setToken(e.target.value)}
+              />
+            </div>
+            {token ? (
+              <button className="btn quiet sm" onClick={() => setToken("")}>
+                Clear token
+              </button>
+            ) : (
+              <button className="btn quiet sm" onClick={() => open("account")}>
+                Create a token
+              </button>
+            )}
+            <span className="faint" style={{ fontSize: "var(--fs-micro)" }}>
+              {updatedAt ? `updated ${timeAgo(new Date(updatedAt).toISOString(), now)}` : "not connected"}
+            </span>
+          </div>
+        </aside>
+
+        <main className="main" id="content">
+          <div className="main-inner">
+            <div className="strip">
+              <div className="tile">
+                <span className="micro">Fleet</span>
+                <span className="val num">
+                  {cap ? (
+                    <>
+                      {cap.active}
+                      <span className="faint" style={{ fontSize: "var(--fs-lg)" }}>/{cap.cap}</span>
+                    </>
+                  ) : (
+                    "—"
+                  )}
+                </span>
+                <Meter
+                  pct={cap && cap.cap ? (cap.active / cap.cap) * 100 : 0}
+                  hot={Boolean(cap && cap.active >= cap.cap)}
+                  label="Fleet saturation"
+                />
+                <span className="sub">
+                  {cap
+                    ? cap.active >= cap.cap
+                      ? "saturated — leases will 429"
+                      : `${cap.cap - cap.active} browser slots free`
+                    : needsToken && !token
+                      ? "waiting for a token"
+                      : "no capacity data"}
+                </span>
+              </div>
+
+              <div className="tile">
+                <span className="micro">Live sessions</span>
+                <span className="val num">{token ? sessions.length : "—"}</span>
+                <span className="sub">
+                  {sessions.length && sessionsDue ? `next lease ends in ${until(sessionsDue, now)}` : "none leased right now"}
+                </span>
+              </div>
+
+              <div className="tile">
+                <span className="micro">Newest verdict</span>
+                <span className="val sm">
+                  {newest ? <Verdict status={newest.latest.status} /> : <span className="faint">none yet</span>}
+                </span>
+                <span className="sub truncate">
+                  {newest ? `${newest.project} · ${timeAgo(newest.latest.at, now)}` : "tag a run with a project to see it here"}
+                </span>
+              </div>
+
+              <div className="tile">
+                <span className="micro">Activity · 24h</span>
+                <span className="val num">
+                  {token ? runsToday : "—"}
+                  <span className="sub" style={{ marginLeft: 6, fontWeight: 400 }}>
+                    runs
+                  </span>
+                </span>
+                {token ? (
+                  <Sparkbars values={buckets} labels={labels} />
+                ) : (
+                  <span className="sub">connect to see activity</span>
+                )}
+                <div className="rail-note">
+                  <span className={"dot" + (live && token ? " live" : "")} aria-hidden="true" />
+                  <span className="sub">{live ? "live" : "paused"}</span>
+                  <span style={{ flex: 1 }} />
+                  <button
+                    className="btn quiet sm"
+                    aria-pressed={live}
+                    onClick={() => setLive((v) => !v)}
+                    title={live ? "Pause auto-refresh" : "Resume auto-refresh"}
+                  >
+                    {live ? "Pause" : "Resume"}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="bar">
+              <h1>{selected ? "Run" : active.label}</h1>
+              <span className="dim">
+                {selected ? "findings, flow results, and the artifacts behind them" : active.blurb}
+              </span>
+            </div>
+
+            {error && tab !== "account" && tab !== "github" ? (
+              <div className="err" role="alert">
+                <div className="micro">
+                  {error.status === 401
+                    ? "Token rejected"
+                    : error.status === 429
+                      ? "Fleet saturated"
+                      : "Could not read the fleet"}
+                </div>
+                <div className="msg mono">{error.status ? `${error.status} ${error.message}` : error.message}</div>
+                <div
+                  className="dim"
+                  style={{ marginTop: 6, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}
+                >
+                  {error.status === 401
+                    ? "Paste a valid token in the rail, or mint a new one."
+                    : error.status === 429
+                      ? "Every browser slot is busy — retry in a moment."
+                      : "Check that the worker is reachable."}
+                  {error.status === 401 ? (
+                    <button className="btn sm" onClick={() => open("account")}>
+                      Open Account
+                    </button>
+                  ) : (
+                    <button className="btn sm ghost" onClick={refresh}>
+                      Retry
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : null}
+
+            {body}
+          </div>
+        </main>
+      </div>
+    </>
   );
 }

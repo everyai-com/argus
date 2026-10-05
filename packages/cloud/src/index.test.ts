@@ -264,6 +264,62 @@ describe("remote MCP endpoint", () => {
       ])
     );
   });
+
+  it("accepts the wire action shape for act / act_batch", async () => {
+    // Regression: both tools wrapped an ActionSchema inside another object, so the
+    // shape that passed MCP validation was always rejected by the /v1 parser (and the
+    // wire-shaped call was rejected here) — every call failed either way.
+    type SchemaNode = {
+      required?: string[];
+      anyOf?: unknown[];
+      items?: SchemaNode;
+      properties?: Record<string, SchemaNode>;
+    };
+    const e = env({
+      ARTIFACTS: memoryArtifacts(),
+      COORDINATOR: {
+        idFromName: () => "main",
+        get: () => ({ fetch: vi.fn(async () => ({ json: async () => ({ owns: false }) })) }),
+      },
+    });
+    const headers = { authorization: "Bearer admin-secret", ...rpcHeaders };
+
+    const tools = await app.request(
+      "https://argus.test/mcp",
+      { method: "POST", headers, body: rpc(2, "tools/list") },
+      e
+    );
+    const listed = (await tools.json()) as {
+      result: { tools: Array<{ name: string; inputSchema: SchemaNode }> };
+    };
+    const byName = new Map(listed.result.tools.map((t) => [t.name, t.inputSchema]));
+
+    // A step IS an action (its `action` field is the discriminant), never a wrapper around one.
+    const act = byName.get("argus_act")!;
+    expect(act.required).toEqual(expect.arrayContaining(["sessionId", "step"]));
+    expect(act.properties?.step?.anyOf).toBeDefined();
+    expect(act.properties?.action).toBeUndefined();
+
+    const batch = byName.get("argus_act_batch")!;
+    expect(batch.properties?.steps?.items?.anyOf).toBeDefined();
+    expect(batch.properties?.steps?.items?.properties?.action?.anyOf).toBeUndefined();
+
+    // Wire-shaped arguments must reach the API (which answers not_found for an unknown
+    // session) instead of failing input validation at the MCP layer.
+    for (const [name, args] of [
+      ["argus_act", { sessionId: "s-missing", step: { action: "reload" } }],
+      ["argus_act_batch", { sessionId: "s-missing", steps: [{ action: "reload" }] }],
+    ] as const) {
+      const res = await app.request(
+        "https://argus.test/mcp",
+        { method: "POST", headers, body: rpc(3, "tools/call", { name, arguments: args }) },
+        e
+      );
+      const body = JSON.stringify(await res.json());
+      expect(body).not.toContain("Input validation error");
+      expect(body).toContain("not_found");
+    }
+  });
 });
 
 describe("server-side flows", () => {
