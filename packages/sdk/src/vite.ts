@@ -111,13 +111,20 @@ export interface ArgusPluginOptions {
   includeInProduction?: boolean;
 }
 
+/** The one script tag we inject — shaped to satisfy vite's HtmlTagDescriptor. */
+interface ArgusHtmlTag {
+  tag: "script";
+  injectTo: "head-prepend";
+  children: string;
+}
+
 interface MinimalVitePlugin {
   name: string;
   apply?: "serve" | "build";
   configResolved(config: { mode: string }): void;
   transformIndexHtml: {
     order: "pre";
-    handler(html: string): { html: string; tags: Array<Record<string, unknown>> };
+    handler(html: string): { html: string; tags: ArgusHtmlTag[] };
   };
 }
 
