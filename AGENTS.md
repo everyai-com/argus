@@ -91,7 +91,5 @@ there, not inline in `init`. See `docs/harness-support.md` for the full matrix.
   browsers get 403 "Your request was blocked" on `*.trycloudflare.com` hosts
   (observed on fresh hosts, not transient). For local testing use a named
   tunnel on your own domain until this clears.
-- `packages/cloud/public/` is VENDORED from production (2026-10-05): the
-  sidebar-redesign source was never committed, so the committed bundle is a
-  byte-copy of prod, not a build of `packages/dashboard/src/`. Do not rebuild
-  the dashboard until the source resurfaces (see `.vendored-from-prod`).
+- `packages/cloud/public/` is the PROMOTED dashboard bundle: build, then
+  `promote` to ship. Never hand-edit it; change `packages/dashboard/src/`.
