@@ -10,7 +10,14 @@
     "directory": "packages/cli"
   },
   "homepage": "https://github.com/everyai-com/argus",
-  "keywords": ["mcp", "testing", "verification", "browser", "cloudflare", "cli"],
+  "keywords": [
+    "mcp",
+    "testing",
+    "verification",
+    "browser",
+    "cloudflare",
+    "cli"
+  ],
   "engines": {
     "node": ">=20"
   },
@@ -29,8 +36,8 @@
   },
   "devDependencies": {
     "@argus/shared": "workspace:*",
-    "@types/node": "^22.0.0",
-    "esbuild": "^0.25.12",
-    "typescript": "^5.7.0"
+    "@types/node": "^26.6.1",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
   }
 }

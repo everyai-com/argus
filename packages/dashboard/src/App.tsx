@@ -220,7 +220,7 @@ function Gauge({
 function CapacityView({ token }: { token: string }) {
   const [cap, setCap] = useState<Capacity>();
   const [error, setError] = useState<string>();
-  const prev = React.useRef<{ c: Capacity["cumulative"]; t: number }>();
+  const prev = React.useRef<{ c: Capacity["cumulative"]; t: number } | undefined>(undefined);
   const [rates, setRates] = useState<{ acquires: number; rejects: number }>({ acquires: 0, rejects: 0 });
 
   useEffect(() => {
