@@ -59,7 +59,9 @@ const flow = (name) => ({
   viewport: "desktop",
   steps: [{ action: { action: "wait", ms: 50 }, expect: [] }],
   success: [
-    { kind: "text", anchor: { css: "h1" }, includes: "Argus" },
+    // Brand text, not the h1: the dashboard opens on the Account tab, so the
+    // h1 reads "Account" — assert the Argus brand is visible instead.
+    { kind: "visible", anchor: { text: "Argus" } },
     { kind: "console-clean", since: 0 },
   ],
   dynamic: [],

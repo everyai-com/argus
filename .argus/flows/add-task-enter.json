@@ -1,7 +1,7 @@
 {
   "version": 1,
   "name": "add-task-enter",
-  "startUrl": "http://localhost:5173/",
+  "startUrl": "http://localhost:5199/",
   "viewport": "desktop",
   "steps": [
     {

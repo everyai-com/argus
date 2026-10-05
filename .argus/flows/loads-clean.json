@@ -1,7 +1,7 @@
 {
   "version": 1,
   "name": "loads-clean",
-  "startUrl": "http://localhost:5173/",
+  "startUrl": "http://localhost:5199/",
   "viewport": "mobile",
   "steps": [
     {
