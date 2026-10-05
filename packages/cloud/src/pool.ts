@@ -2,15 +2,15 @@
  * Shared warm-browser pool helpers for the batch paths (flow replay, smoke,
  * audit) that run in the Worker rather than in a BrowserSession DO.
  *
- * Launching a Browser Rendering session is a ~1-2s cold start and the paid
- * launch rate is only ONE per second, so a suite of N parallel flows that each
+ * Launching a browser session is a ~1-2s cold start and the paid launch rate
+ * is THREE per second, so a suite of N parallel flows that each
  * launch their own browser serializes on that limit. These helpers borrow a
  * warm browser from the Coordinator's free-list (shared with the lease path)
  * and `connect()` instead — and hand it back on finish instead of closing it.
  *
  * Safe by construction: a dead warm id (its keep_alive elapsed) fails the
  * connect and falls through to launch(); a browser the pool won't take is
- * closed here so browsers can't leak toward the 120/account cap.
+ * closed here so browsers can't leak toward the 200/account cap.
  */
 import { connect, launch, type Browser } from "@cloudflare/playwright";
 import type { Env } from "./env";
@@ -19,7 +19,7 @@ const KEEP_ALIVE_MS = 600_000; // 10 min — the Cloudflare maximum
 
 /**
  * Cold-launch a browser through the Coordinator's launch limiter so a burst of
- * launches is staggered to <=1/sec (CF's cap) and completes, instead of racing
+ * launches is staggered to <=3/sec (CF's cap) and completes, instead of racing
  * the rate limit and failing. A congested queue (waitMs null) throws so the
  * caller backpressures rather than holding the request open indefinitely.
  */

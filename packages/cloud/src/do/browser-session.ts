@@ -140,7 +140,7 @@ export class BrowserSession extends DurableObject<Env> {
       tenantId: body.tenantId,
       // Seed the browser id from the warm pool: ensurePage() connects to
       // cfSessionId before it launches, so a parked browser is reused (~100-200ms)
-      // instead of cold-launched (~1-2s, capped at 1/sec). A dead id just falls
+      // instead of cold-launched (~1-2s, capped at 3/sec). A dead id just falls
       // through to launch().
       cfSessionId: body.warmSessionId,
       url: body.url,
@@ -177,7 +177,7 @@ export class BrowserSession extends DurableObject<Env> {
   private async release(reason: string): Promise<void> {
     const meta = await this.loadMeta();
     // Park the browser warm instead of closing it, so the NEXT lease reconnects
-    // (~100-200ms) rather than cold-launching (~1-2s, capped at 1/sec). Only a
+    // (~100-200ms) rather than cold-launching (~1-2s, capped at 3/sec). Only a
     // still-connected browser is parkable; the coordinator caps the warm pool
     // and tells us whether it took ours. A browser it did NOT take is closed
     // here, so browsers can never leak toward the 120/account cap.
@@ -243,7 +243,7 @@ export class BrowserSession extends DurableObject<Env> {
     }
     if (!this.browser?.isConnected()) {
       // Cold launch through the shared limiter so a burst of leases missing the
-      // warm pool staggers to <=1/sec (CF's cap) and completes instead of failing.
+      // warm pool staggers to <=3/sec (CF's cap) and completes instead of failing.
       this.browser = await throttledLaunch(this.env);
       if (meta) {
         meta.cfSessionId = this.browser.sessionId();

@@ -2,11 +2,12 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "argus-cloud",
   "main": "src/worker.ts",
-  "compatibility_date": "2026-08-01",
+  // 2026-10-01: earliest date with durable_object_io_tasks_prevent_eviction.
+  "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
 
-  // Concurrency: paid Browser Rendering allows ~120 concurrent browsers. Cap at 60
+  // Concurrency: paid allows 200 concurrent browsers (Browser Run limits). Cap at 60
   // for headroom; keep up to 16 warm when idle so parallel leases reconnect fast.
   "vars": { "ARGUS_MAX_SESSIONS": "60", "ARGUS_MAX_WARM": "16" },
 

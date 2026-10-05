@@ -117,7 +117,7 @@ export type SessionInfo = z.infer<typeof SessionInfoSchema>;
 // Each tenant gets its own token, a RESERVED floor (browsers it can always
 // get, even under contention) and a burst CEILING. Admission honours every
 // tenant's floor before letting anyone burst into shared headroom, so a greedy
-// project can never starve a reserved one. The warm pool and the 1/sec launch
+// project can never starve a reserved one. The warm pool and the 3/sec launch
 // limiter stay GLOBAL — a parked Chromium is tenant-agnostic, and the launch
 // rate is a physical account limit, not a per-tenant one.
 // ---------------------------------------------------------------------------

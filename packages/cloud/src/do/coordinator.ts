@@ -2,13 +2,14 @@
  * Coordinator — singleton DO: concurrency cap + fleet tracking + warm pool +
  * multi-tenant fair admission.
  *
- * Scale: the paid Browser Rendering account allows ~120 concurrent browsers, so
+ * Scale: the paid account allows 200 concurrent browsers (Browser Run limits,
+ * Sep-2026), so
  * the cap can be large. To keep `/acquire` cheap at that scale, active sessions
  * are counted with maintained keys (O(#tenants) per acquire) rather than a
  * storage.list scan on every call; a periodic alarm reconciles those counts
  * against the real session records and prunes expired leases, so a missed
  * release can never wedge the cap. Launching is the real throughput ceiling
- * (1 new browser/second), so a released session parks its browser here (warm
+ * (3 new browsers/second), so a released session parks its browser here (warm
  * free-list) and the next lease `connect()`s to it (~100-200ms) instead of
  * cold-launching.
  *
@@ -40,9 +41,10 @@ const RECONCILE_MS = 60_000;
 // The default/admin tenant: legacy single-token usage and the admin token all
 // resolve here. It has no reserved floor and may use the whole cap.
 const ADMIN_TENANT = "_admin";
-// CF paid allows 1 new browser/second. Serialize cold launches to just under that
-// (a little margin for jitter) so a burst QUEUES instead of failing on the rate limit.
-const LAUNCH_INTERVAL_MS = 1_200;
+// CF paid allows 3 new browsers/second (Browser Run limits, Sep-2026).
+// Serialize cold launches to just under that (a little margin for jitter) so a
+// burst QUEUES instead of failing on the rate limit.
+const LAUNCH_INTERVAL_MS = 400;
 // Beyond this queued wait the burst is too deep — refuse the token so the caller
 // backpressures (429) rather than holding a request open for a minute.
 const MAX_LAUNCH_WAIT_MS = 30_000;
@@ -291,9 +293,9 @@ export class Coordinator extends DurableObject<Env> {
   }
 
   // -------------------------------------------------------------------------
-  // Launch limiter — hand out cold-launch slots at <=1/sec so a burst of leases
+  // Launch limiter — hand out cold-launch slots at <=3/sec so a burst of leases
   // that all miss the warm pool completes (staggered) instead of failing on CF's
-  // 1-new-browser-per-second cap. Each caller reserves the next slot and waits it out.
+  // 3-new-browsers-per-second cap. Each caller reserves the next slot and waits it out.
   // -------------------------------------------------------------------------
 
   private async launchToken(): Promise<Response> {
