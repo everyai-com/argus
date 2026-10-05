@@ -111,6 +111,7 @@ Then assert on it: `{ "kind": "signal", "name": "task:added", "minCount": 1 }` o
 | `argus_*` tools never appear | client read its MCP config at startup | restart the client; in Claude Code `/mcp` alone does not re-read the config |
 | `could not start cloudflared … install it with: brew install cloudflared` | cloudflared missing | install cloudflared, or test a deployed URL instead |
 | Tunnel URL 404s / connection refused right after starting | fresh `trycloudflare` hostname not resolved yet | wait ~10–30s; the CLI polls before proceeding |
+| `403 Your request was blocked.` on a `trycloudflare` URL from cloud browsers | edge Bot Management on quick tunnels (observed Oct-2026) | use a named tunnel on your own domain, or test a deployed URL |
 | `Blocked request. This host is not allowed.` from the dev server | Vite host check | add `server.allowedHosts: [".trycloudflare.com"]` (and `preview.allowedHosts`) |
 | `missing environment values: FOO — export them … and re-run` | flow uses `${FOO}` and it isn't set | export the value (seeded test user) or ask me — never hard-code it in the flow |
 | `auth profile "default" not found for … — run the login flow (saveAuthAs) against this environment first` | authenticated flow ran before the login flow minted the profile | run the login flow (it has `saveAuthAs`) against the same origin first |

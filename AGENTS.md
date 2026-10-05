@@ -13,10 +13,11 @@ dashboard hosting), `packages/cli`, `packages/mcp`, `packages/dashboard`,
 ## Commands
 
 - typecheck all: `pnpm -r typecheck` · build CLI/MCP: `pnpm --filter @argus/cli --filter @argus/mcp build`
-- dashboard build (into cloud/public): `pnpm --filter @argus/dashboard build`
+- dashboard: `pnpm --filter @argus/dashboard build` (into gitignored `dist/`) + `promote` to ship into `cloud/public` (refuses while vendored)
 - deploy: `cd packages/cloud && wrangler deploy` (account already logged in)
 - live API: `https://argus-cloud.everyai-com.workers.dev` · token in `.argus/config.json` (gitignored)
-- demo: `pnpm --filter @argus/demo build && (cd apps/demo && vite preview --port 5199)`
+- demo: `pnpm --filter @argus/demo build && (cd apps/demo && pnpm preview)` (port 5199 is in vite.config; bare `vite` is not on PATH)
+- demo worker (live dogfood target): https://argus-demo.everyai-com.workers.dev · deploy with `pnpm --filter @argus/demo deploy` (builds + ships `worker.ts` + `./dist`); API logic is shared in `apps/demo/shared/api.ts` so preview and prod can't drift
 - tunnel for local testing: `argus tunnel 5199` (or `node packages/cli/dist/index.js ...`)
 - wire a project to Argus (MCP + verification steps): `argus init <api-url> <token> [--harness all]`
 - fleet ops: `argus capacity [--watch]` (live gauges) · `argus stress <N>` (load) ·
@@ -37,7 +38,7 @@ dashboard hosting), `packages/cli`, `packages/mcp`, `packages/dashboard`,
   create/update — never bypass it, or reserved floors stop being satisfiable. A
   tenant below its floor is always admitted; bursting only takes capacity net of
   OTHER tenants' unused reservations (`global + unusedReservations ≥ cap` ⇒ 429
-  `fleet_saturated`). The warm pool and the 1/sec launch limiter stay GLOBAL — a
+  `fleet_saturated`). The warm pool and the 3/sec launch limiter stay GLOBAL — a
   parked Chromium is tenant-agnostic and the launch rate is a physical account
   limit, not a per-tenant one; don't shard them.
 - Tenant tokens: only the SHA-256 hash is stored (`tok:<hash>` → id); the raw
@@ -72,7 +73,16 @@ the Codex TOML snippet. Add a new harness there, not inline in `init`. See
 - `wrangler dev` needs `--remote` for the browser binding; we test against the
   deployed worker instead.
 - Vite apps behind the tunnel need `allowedHosts: [".trycloudflare.com"]`.
-- Flow `startUrl`s in `.argus/flows/` currently point at a trycloudflare URL
-  from the build session — re-point at the app's real URL before relying on them.
+- Flow `startUrl`s in `.argus/flows/` point at the local demo
+  (`http://localhost:5199/`). `argus verify` / `test --local` re-home them onto
+  the target/tunnel URL, so the committed host only matters for local replay.
 - Fresh trycloudflare hostnames take ~10s to resolve at the edge; local DNS may
   lag longer (the CLI polls, then proceeds).
+- Quick tunnels are edge bot-managed: since ~Oct-2026 the headless cloud
+  browsers get 403 "Your request was blocked" on `*.trycloudflare.com` hosts
+  (observed on fresh hosts, not transient). For local testing use a named
+  tunnel on your own domain until this clears.
+- `packages/cloud/public/` is VENDORED from production (2026-10-05): the
+  sidebar-redesign source was never committed, so the committed bundle is a
+  byte-copy of prod, not a build of `packages/dashboard/src/`. Do not rebuild
+  the dashboard until the source resurfaces (see `.vendored-from-prod`).
