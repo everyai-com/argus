@@ -14,6 +14,8 @@ export interface RunMeta {
   project?: string;
   /** Which tenant owns this run — runs/fleet views are filtered by it (admin sees all). */
   tenantId?: string;
+  /** Who/what triggered the run (`cli`, `mcp`, `github-app`, `ci:…`, `agent:…`). */
+  actor?: string;
   url: string;
   status: string;
   at: string;

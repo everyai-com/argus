@@ -30,6 +30,7 @@ import {
   ScreenshotRequestSchema,
   RING_BUFFER_LIMIT,
   VIEWPORTS,
+  apiError,
   type ViewportName,
 } from "@argus/shared";
 import { evalPredicate, resolveAnchor, weakestTier } from "../verify";
@@ -105,10 +106,10 @@ export class BrowserSession extends DurableObject<Env> {
         case "/info":
           return json((await this.loadMeta()) ?? { error: "no such session" });
         default:
-          return json({ error: `unknown command ${path}` }, 404);
+          return json(apiError("unknown_command", path), 404);
       }
     } catch (err) {
-      return json({ error: "session_command_failed", detail: String(err) }, 500);
+      return json(apiError("session_command_failed", String(err).slice(0, 500)), 500);
     }
   }
 

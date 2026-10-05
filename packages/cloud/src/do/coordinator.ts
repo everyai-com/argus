@@ -24,6 +24,7 @@
  * double-count or hand the same warm browser to two leases.
  */
 import { DurableObject } from "cloudflare:workers";
+import { apiError } from "@argus/shared";
 import type {
   SessionInfo,
   Tenant,
@@ -237,7 +238,7 @@ export class Coordinator extends DurableObject<Env> {
           : verdict.reason === "tenant_disabled"
             ? "tenant is disabled"
             : `fleet saturated (${verdict.active}/${cap}) after honouring every tenant's reserved floor — retry shortly`;
-      return json({ error: verdict.reason ?? "session_cap_reached", detail }, 429);
+      return json(apiError(verdict.reason ?? "session_cap_reached", detail), 429);
     }
     await this.bumpStat("acquires");
     return json({ ok: true, active: verdict.active, max: cap, warmSessionId: verdict.warmSessionId });
@@ -417,7 +418,7 @@ export class Coordinator extends DurableObject<Env> {
       await this.ctx.storage.put(`tenanttok:${id}`, tokenHash); // reverse, for delete
       result = { ok: true, tenant };
     });
-    if (!result.ok) return json({ error: "tenant_create_failed", detail: result.error }, 409);
+    if (!result.ok) return json(apiError("tenant_create_failed", result.error), 409);
     return json({ tenant: result.tenant });
   }
 
@@ -451,7 +452,7 @@ export class Coordinator extends DurableObject<Env> {
       await this.ctx.storage.put(TENANTS_KEY, tenants);
       result = { ok: true, tenant: next };
     });
-    if (!result.ok) return json({ error: "tenant_update_failed", detail: result.error }, 409);
+    if (!result.ok) return json(apiError("tenant_update_failed", result.error), 409);
     return json({ tenant: result.tenant });
   }
 
@@ -471,7 +472,7 @@ export class Coordinator extends DurableObject<Env> {
       await this.ctx.storage.put(`tenanttok:${id}`, tokenHash);
       result = { ok: true };
     });
-    if (!result.ok) return json({ error: "tenant_token_failed", detail: result.error }, 409);
+    if (!result.ok) return json(apiError("tenant_token_failed", result.error), 409);
     return json({ ok: true });
   }
 

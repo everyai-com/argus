@@ -147,7 +147,7 @@ export function buildCfSaasFlows(opts: PresetOptions): { flows: Flow[]; skipped:
   const root = base.replace(/\/$/, "");
   const flows: Flow[] = [];
   const skipped: string[] = [];
-  const clean: Predicate = { kind: "console-clean", since: 0, includeThirdParty: false };
+  const clean: Predicate = { kind: "console-clean", since: 0, cumulative: false, includeThirdParty: false };
   /** "this is a real route, not the not-found page" */
   const realRoute: Predicate[] = probe.notFoundMarker
     ? [{ kind: "hidden", anchor: { text: probe.notFoundMarker } }]
@@ -196,7 +196,7 @@ export function buildCfSaasFlows(opts: PresetOptions): { flows: Flow[]; skipped:
           action: { action: "click" },
           anchor: { css: 'button[type="submit"]' },
           // The consequence that proves a real sign-in, not just a spinner.
-          expect: [{ kind: "network", urlIncludes: "/api/auth", status: 200, minCount: 1, since: 0 }],
+          expect: [{ kind: "network", urlIncludes: "/api/auth", status: 200, minCount: 1, since: 0, cumulative: false }],
         },
         { action: { action: "wait", ms: 1500 }, expect: [] },
       ],
@@ -278,7 +278,7 @@ export function buildCfSaasFlows(opts: PresetOptions): { flows: Flow[]; skipped:
       startUrl: root + probe.apiHealth,
       viewport: "desktop",
       steps: [{ action: { action: "wait", ms: 600 }, expect: [] }],
-      success: [{ kind: "network", urlIncludes: probe.apiHealth, status: 200, minCount: 1, since: 0 }],
+      success: [{ kind: "network", urlIncludes: probe.apiHealth, status: 200, minCount: 1, since: 0, cumulative: false }],
       dynamic: [],
     });
   } else {

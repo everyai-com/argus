@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  ActorSchema,
   AnchorSchema,
+  apiError,
+  ApiErrorSchema,
   CreateTenantRequestSchema,
+  FlowActionSchema,
   FlowSchema,
+  FlowVerdictSchema,
   LeaseRequestSchema,
   MAX_LEASE_TTL_SECONDS,
   PredicateSchema,
@@ -81,5 +86,72 @@ describe("wire contract", () => {
       success: [nested],
     };
     expect(FlowSchema.safeParse(flow).success).toBe(true);
+  });
+
+  it("keeps flow verdicts a closed enum agents can switch on", () => {
+    for (const v of [
+      "drift",
+      "ambiguous_anchor",
+      "auth_profile_missing",
+      "expectation_failed",
+      "success_condition_failed",
+      "error",
+    ]) {
+      expect(FlowVerdictSchema.safeParse(v).success).toBe(true);
+    }
+    expect(FlowVerdictSchema.safeParse("it broke").success).toBe(false);
+  });
+
+  it("accepts MCP tool calls and shell commands as executable actions", () => {
+    expect(FlowActionSchema.parse({ tool: "argus_flow_heal", args: { name: "x" } })).toEqual({
+      tool: "argus_flow_heal",
+      args: { name: "x" },
+    });
+    expect(FlowActionSchema.parse({ tool: "argus_flow_heal" })).toEqual({
+      tool: "argus_flow_heal",
+      args: {},
+    });
+    expect(FlowActionSchema.parse({ command: "argus verify https://x" })).toEqual({
+      command: "argus verify https://x",
+    });
+    expect(FlowActionSchema.safeParse({ nope: 1 }).success).toBe(false);
+  });
+
+  it("defaults event predicates to step-relative since with a cumulative opt-out", () => {
+    for (const p of [
+      { kind: "network", urlIncludes: "/api" },
+      { kind: "console-clean" },
+      { kind: "stream", urlIncludes: "/ws" },
+      { kind: "signal", name: "ready" },
+    ]) {
+      const parsed = PredicateSchema.parse(p) as { since: number; cumulative: boolean };
+      expect(parsed.since).toBe(0);
+      expect(parsed.cumulative).toBe(false);
+    }
+    const cumulative = PredicateSchema.parse({ kind: "network", urlIncludes: "/api", cumulative: true }) as {
+      cumulative: boolean;
+    };
+    expect(cumulative.cumulative).toBe(true);
+  });
+
+  it("builds typed API errors from the catalogue, failing closed on unknown codes", () => {
+    expect(apiError("bad_request", "detail here")).toEqual({
+      error: "bad_request",
+      detail: "detail here",
+      retryable: false,
+      remediation: "fix the request body against the schema hint in detail, then retry",
+    });
+    expect(apiError("fleet_saturated")).toMatchObject({ error: "fleet_saturated", retryable: true });
+    expect(apiError("fleet_saturated").remediation).toContain("retry");
+    // Unknown codes stay machine-readable but never claim retryability.
+    expect(apiError("something_new")).toEqual({ error: "something_new", retryable: false });
+    expect(ApiErrorSchema.parse(apiError("unauthorized")).retryable).toBe(false);
+    // Callers can override when they know better.
+    expect(apiError("bad_request", undefined, { retryable: true }).retryable).toBe(true);
+  });
+
+  it("keeps actor tags short free-form attribution", () => {
+    expect(ActorSchema.safeParse("agent:explorer-3").success).toBe(true);
+    expect(ActorSchema.safeParse("x".repeat(81)).success).toBe(false);
   });
 });

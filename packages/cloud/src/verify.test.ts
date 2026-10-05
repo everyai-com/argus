@@ -109,6 +109,7 @@ describe("stream predicate", () => {
       dataIncludes: '"ok"',
       minCount: 1,
       since: 0,
+      cumulative: false,
     });
     expect(r.pass).toBe(true);
     expect(r.tier).toBe("consequence");
@@ -121,6 +122,7 @@ describe("stream predicate", () => {
       direction: "sent",
       minCount: 1,
       since: 0,
+      cumulative: false,
     });
     expect(r.pass).toBe(false);
     expect(r.evidence).toContain("stream event(s)");
@@ -132,6 +134,7 @@ describe("stream predicate", () => {
       urlIncludes: "/socket",
       minCount: 1,
       since: 0,
+      cumulative: false,
     });
     expect(r.pass).toBe(false);
   });

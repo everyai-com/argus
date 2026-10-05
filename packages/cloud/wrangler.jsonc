@@ -14,6 +14,9 @@
   // Headless Chromium on Cloudflare's network
   "browser": { "binding": "BROWSER" },
 
+  // Workers AI for the vision decision layer (Clef judge)
+  "ai": { "binding": "AI" },
+
   // Screenshots, traces, baselines, run reports
   "r2_buckets": [
     { "binding": "ARTIFACTS", "bucket_name": "argus-artifacts" }

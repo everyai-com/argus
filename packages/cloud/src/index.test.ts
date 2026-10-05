@@ -49,6 +49,37 @@ describe("worker API boundary", () => {
     ).toBe(401);
   });
 
+  it("types API errors with retryability and remediation", async () => {
+    const unauthed = await app.request("https://argus.test/v1/runs", {}, env());
+    expect(unauthed.status).toBe(401);
+    const unauthedBody = (await unauthed.json()) as Record<string, unknown>;
+    expect(unauthedBody).toMatchObject({ error: "unauthorized", retryable: false });
+    expect(unauthedBody.remediation).toContain("token");
+
+    const authed = { authorization: "Bearer admin-secret", "content-type": "application/json" };
+    const bad = await app.request(
+      "https://argus.test/v1/flows/verify",
+      { method: "POST", headers: authed, body: JSON.stringify({ flows: [] }) },
+      env()
+    );
+    expect(bad.status).toBe(400);
+    const badBody = (await bad.json()) as Record<string, unknown>;
+    expect(badBody).toMatchObject({ error: "bad_request", retryable: false });
+    expect(badBody.remediation).toContain("request body");
+
+    const unknown = await app.request(
+      "https://argus.test/v1/session/s-abc/definitely-not-a-command",
+      { method: "POST", headers: authed, body: "{}" },
+      env()
+    );
+    expect(unknown.status).toBe(404);
+    expect(await unknown.json()).toMatchObject({
+      error: "unknown_command",
+      detail: "definitely-not-a-command",
+      retryable: false,
+    });
+  });
+
   it("fails accounts closed until the auth secret is configured", async () => {
     const session = await app.request("https://argus.test/api/auth/get-session", {}, env());
     expect(session.status).toBe(503);

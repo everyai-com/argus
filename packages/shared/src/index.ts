@@ -418,10 +418,14 @@ export const LeafPredicateSchema = z.discriminatedUnion("kind", [
     minCount: z.number().int().default(1),
     maxCount: z.number().int().optional(), // cardinality guard (e.g. exactly 1 POST)
     since: z.number().int().default(0),
+    /** Step `expect` only: observe the whole run so far instead of "since this step started". */
+    cumulative: z.boolean().default(false),
   }),
   z.object({
     kind: z.literal("console-clean"),
     since: z.number().int().default(0),
+    /** Step `expect` only: observe the whole run so far instead of "since this step started". */
+    cumulative: z.boolean().default(false),
     /** Count errors from third-party scripts too (default: first-party only —
      * a Turnstile/analytics script's console noise isn't your app's bug). */
     includeThirdParty: z.boolean().default(false),
@@ -441,6 +445,8 @@ export const LeafPredicateSchema = z.discriminatedUnion("kind", [
     minCount: z.number().int().default(1),
     maxCount: z.number().int().optional(),
     since: z.number().int().default(0),
+    /** Step `expect` only: observe the whole run so far instead of "since this step started". */
+    cumulative: z.boolean().default(false),
   }),
   z.object({ kind: z.literal("visible"), anchor: AnchorSchema }),
   z.object({ kind: z.literal("hidden"), anchor: AnchorSchema }),
@@ -460,6 +466,8 @@ export const LeafPredicateSchema = z.discriminatedUnion("kind", [
     minCount: z.number().int().default(1),
     maxCount: z.number().int().optional(),
     since: z.number().int().default(0),
+    /** Step `expect` only: observe the whole run so far instead of "since this step started". */
+    cumulative: z.boolean().default(false),
   }),
   /**
    * The app's own store — truth no DOM read can reach (e.g. a deploy that
@@ -555,6 +563,69 @@ export const ScreenshotResponseSchema = z.object({
 export type ScreenshotResponse = z.infer<typeof ScreenshotResponseSchema>;
 
 // ---------------------------------------------------------------------------
+// Judge — the vision decision layer (Cloudflare Clef, Jev-API compatible)
+//
+// Deterministic engines stay the verdict source of truth: predicates decide
+// pass/fail, pixel-diff detects change. The judge only ADDS judgments on top:
+// visual-diff adjudication (regression vs rendering noise) and failure triage
+// (bug class + severity + needs-human). Every judgment is optional, labeled
+// with its model, and the raw deterministic signal is always preserved beside
+// it — a judgment refines a heuristic severity, never a predicate verdict.
+// ---------------------------------------------------------------------------
+
+/** Clef model selector: full precision vs latency-critical flash. */
+export const JudgeModelSchema = z.enum(["clef", "clef-flash"]);
+export type JudgeModel = z.infer<typeof JudgeModelSchema>;
+
+/** What the vision judge saw in a baseline-vs-current screenshot pair. */
+export const VisualAdjudicationSchema = z.object({
+  verdict: z.enum(["real_regression", "rendering_noise", "content_change", "inconclusive"]),
+  confidence: z.number().min(0).max(1),
+  /** Human-level visible impact (none = nothing a user would notice). */
+  severity: z.enum(["critical", "major", "minor", "info", "none"]),
+  model: JudgeModelSchema,
+  latencyMs: z.number().int().optional(),
+});
+export type VisualAdjudication = z.infer<typeof VisualAdjudicationSchema>;
+
+/** Bug classes the judge triages replay/audit failures into. */
+export const JudgeBugClassSchema = z.enum([
+  "visual_regression",
+  "console_error",
+  "dead_button",
+  "wrong_state",
+  "network_failure",
+  "auth_failure",
+  "flaky_infra",
+  "unknown",
+]);
+export type JudgeBugClass = z.infer<typeof JudgeBugClassSchema>;
+
+/** One-call triage attached to a failed replay (additive — status untouched). */
+export const FailureTriageSchema = z.object({
+  bugClass: JudgeBugClassSchema,
+  severity: z.enum(["critical", "major", "minor", "info"]),
+  /** True when a human should review before acting (ambiguous cause/risky fix). */
+  needsHuman: z.boolean(),
+  confidence: z.number().min(0).max(1),
+  model: JudgeModelSchema,
+  latencyMs: z.number().int().optional(),
+});
+export type FailureTriage = z.infer<typeof FailureTriageSchema>;
+
+/**
+ * A judge-refined finding severity. When present, `Finding.severity` already
+ * reflects the judged value and `note` names the original deterministic one.
+ */
+export const JudgedSeveritySchema = z.object({
+  severity: z.enum(["critical", "major", "minor", "info"]),
+  confidence: z.number().min(0).max(1),
+  model: JudgeModelSchema,
+  note: z.string().max(200).optional(),
+});
+export type JudgedSeverity = z.infer<typeof JudgedSeveritySchema>;
+
+// ---------------------------------------------------------------------------
 // Smoke suite — the zero-config "just point it at my app" check
 // ---------------------------------------------------------------------------
 
@@ -600,6 +671,8 @@ export const FindingSchema = z.object({
       nextAction: z.string(),
     })
     .optional(),
+  /** Judge-refined severity, when the judge ran and was confident. */
+  judged: JudgedSeveritySchema.optional(),
 });
 export type Finding = z.infer<typeof FindingSchema>;
 
@@ -650,6 +723,11 @@ export const AuditRequestSchema = z.object({
    * accessibility, performance or visual regressions.
    */
   authProfile: AuthProfileNameSchema.optional(),
+  /**
+   * Run the vision decision layer (Clef) over visual diffs and findings.
+   * Default true. Set false for pure-deterministic runs with zero model cost.
+   */
+  judge: z.boolean().default(true),
 });
 export type AuditRequest = z.infer<typeof AuditRequestSchema>;
 
@@ -672,6 +750,8 @@ export const VisualDiffSchema = z.object({
   currentKey: z.string(),
   baselineKey: z.string().optional(),
   diffKey: z.string().optional(), // rendered diff image
+  /** Vision-judge adjudication, when the judge ran (see Judge section). */
+  judgment: VisualAdjudicationSchema.optional(),
 });
 export type VisualDiff = z.infer<typeof VisualDiffSchema>;
 
@@ -728,6 +808,32 @@ export const FlowSchema = z.object({
 });
 export type Flow = z.infer<typeof FlowSchema>;
 
+/**
+ * Machine-readable IDs for every replay failure mode. Agents switch on these —
+ * never on prose. Additive-only: new verdicts extend the enum, existing IDs
+ * never change meaning.
+ */
+export const FlowVerdictSchema = z.enum([
+  "drift",
+  "ambiguous_anchor",
+  "auth_profile_missing",
+  "expectation_failed",
+  "success_condition_failed",
+  "error",
+]);
+export type FlowVerdict = z.infer<typeof FlowVerdictSchema>;
+
+/**
+ * An executable next step attached to a decision: an MCP tool call (for agents)
+ * or a shell command (for humans). Present only when the fix is fully
+ * determined — no placeholders, no guessing.
+ */
+export const FlowActionSchema = z.union([
+  z.object({ tool: z.string().min(1), args: z.record(z.string(), z.unknown()).default({}) }),
+  z.object({ command: z.string().min(1) }),
+]);
+export type FlowAction = z.infer<typeof FlowActionSchema>;
+
 export const FlowReplayResultSchema = z.object({
   flow: z.string(),
   status: z.enum(["ok", "drift", "error"]),
@@ -735,15 +841,18 @@ export const FlowReplayResultSchema = z.object({
   failedStep: z.number().int().optional(),
   decision: z
     .object({
-      verdict: z.string(),
+      verdict: FlowVerdictSchema,
       whatChanged: z.string(),
       suggestedFix: z.string().optional(),
       nextAction: z.string(),
+      action: FlowActionSchema.optional(),
     })
     .optional(),
   evidenceTier: EvidenceTierSchema.optional(),
   durationMs: z.number(),
   screenshotKey: z.string().optional(), // final-state screenshot
+  /** Vision-judge triage, attached to failures when the judge ran. */
+  triage: FailureTriageSchema.optional(),
 });
 export type FlowReplayResult = z.infer<typeof FlowReplayResultSchema>;
 
@@ -777,7 +886,141 @@ export type RunSummary = z.infer<typeof RunSummarySchema>;
 // ---------------------------------------------------------------------------
 
 export const ApiErrorSchema = z.object({
+  /** Stable machine-readable code (snake_case) — agents switch on this. */
   error: z.string(),
   detail: z.string().optional(),
+  /** Safe to retry (with backoff) when true; fix the cause first when false. */
+  retryable: z.boolean().default(false),
+  /** What to do about it, in one sentence. */
+  remediation: z.string().optional(),
 });
 export type ApiError = z.infer<typeof ApiErrorSchema>;
+
+/**
+ * Who/what triggered a run — `cli`, `mcp`, `github-app`, `ci:<workflow>`,
+ * `agent:<name>`. Free-form but short; powers multi-actor attribution in run
+ * history. Clients may override via ARGUS_ACTOR.
+ */
+export const ActorSchema = z.string().max(80);
+export type Actor = z.infer<typeof ActorSchema>;
+
+/** Retry/remediation defaults per error code — the typed-errors catalogue. */
+export const API_ERROR_DEFAULTS: Record<string, { retryable: boolean; remediation: string }> = {
+  bad_request: {
+    retryable: false,
+    remediation: "fix the request body against the schema hint in detail, then retry",
+  },
+  unauthorized: {
+    retryable: false,
+    remediation: "check the Bearer token (ARGUS_TOKEN or .argus/config.json) and that the tenant is not revoked",
+  },
+  forbidden: {
+    retryable: false,
+    remediation: "this route needs the admin token",
+  },
+  not_found: {
+    retryable: false,
+    remediation: "check the id; call the matching list route to see what exists",
+  },
+  unknown_command: {
+    retryable: false,
+    remediation: "use one of the documented session commands",
+  },
+  tenant_disabled: {
+    retryable: false,
+    remediation: "contact the admin — this tenant is disabled",
+  },
+  tenant_burst_reached: {
+    retryable: true,
+    remediation: "release an idle session or ask the admin to raise maxBurst, then retry",
+  },
+  fleet_saturated: {
+    retryable: true,
+    remediation: "wait a few seconds and retry; the fleet frees sessions as runs finish",
+  },
+  session_cap_reached: {
+    retryable: true,
+    remediation: "wait a few seconds and retry",
+  },
+  smoke_failed: {
+    retryable: true,
+    remediation: "retry once; if it persists the target page or the fleet is at fault — see detail",
+  },
+  audit_failed: {
+    retryable: true,
+    remediation: "retry once; if it persists the target page or the fleet is at fault — see detail",
+  },
+  replay_failed: {
+    retryable: true,
+    remediation: "retry once; replay crashes are usually a dead start URL or fleet pressure — see detail",
+  },
+  verify_failed: {
+    retryable: true,
+    remediation: "retry once; suite crashes are usually a dead start URL or fleet pressure — see detail",
+  },
+  auth_not_configured: {
+    retryable: false,
+    remediation: "the server owner must set the auth secret",
+  },
+  auth_unavailable: {
+    retryable: true,
+    remediation: "retry shortly; if it persists the auth backend is down",
+  },
+  mint_failed: {
+    retryable: true,
+    remediation: "retry; if it persists the tenant registry is unreachable — see detail",
+  },
+  github_app_not_configured: {
+    retryable: false,
+    remediation: "the server owner must configure the GitHub App credentials",
+  },
+  invalid_signature: {
+    retryable: false,
+    remediation: "check the webhook secret matches the GitHub App settings",
+  },
+  invalid_delivery: {
+    retryable: false,
+    remediation: "re-deliver the event from the GitHub App settings page",
+  },
+  invalid_json: {
+    retryable: false,
+    remediation: "send a valid JSON body",
+  },
+  reserved_id: {
+    retryable: false,
+    remediation: "choose a different tenant id",
+  },
+  session_command_failed: {
+    retryable: true,
+    remediation: "retry once; if it persists the browser session is wedged — release it and lease a fresh one",
+  },
+  tenant_create_failed: {
+    retryable: false,
+    remediation: "see detail — usually a duplicate id or a reserved total over the fleet cap",
+  },
+  tenant_update_failed: {
+    retryable: false,
+    remediation: "see detail — usually an unknown id or a reserved total over the fleet cap",
+  },
+  tenant_token_failed: {
+    retryable: false,
+    remediation: "check the tenant id exists, then retry",
+  },
+};
+
+/** Build a typed API error — every route's failure path goes through here. */
+export function apiError(
+  code: string,
+  detail?: string,
+  overrides?: { retryable?: boolean; remediation?: string }
+): ApiError {
+  const defaults = API_ERROR_DEFAULTS[code];
+  return {
+    error: code,
+    ...(detail === undefined ? {} : { detail }),
+    retryable: overrides?.retryable ?? defaults?.retryable ?? false,
+    ...(overrides?.remediation ?? defaults?.remediation
+      ? { remediation: (overrides?.remediation ?? defaults?.remediation) as string }
+      : {}),
+  };
+}

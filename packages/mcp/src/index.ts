@@ -68,11 +68,16 @@ async function api(method: string, path: string, body?: unknown): Promise<unknow
     throw new Error(`argus API returned non-JSON (${res.status}): ${text.slice(0, 200)}`);
   }
   if (!res.ok) {
-    const err = data as { error?: string; detail?: string };
-    throw new Error(`${err.error ?? res.status}${err.detail ? ` — ${err.detail}` : ""}`);
+    const err = data as { error?: string; detail?: string; retryable?: boolean; remediation?: string };
+    const retry = err.retryable ? " · retryable" : "";
+    const fix = err.remediation ? ` · fix: ${err.remediation}` : "";
+    throw new Error(`${err.error ?? res.status}${err.detail ? ` — ${err.detail}` : ""}${retry}${fix}`);
   }
   return data;
 }
+
+/** Run attribution — override with ARGUS_ACTOR (e.g. `agent:explorer-3`). */
+const actor = (): string => process.env.ARGUS_ACTOR ?? "mcp";
 
 const jsonResult = (data: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(data) }],
@@ -510,7 +515,7 @@ registerTool(
 
 registerTool(
   "argus_flow_save",
-  "Persist a flow to .argus/flows/<name>.json (git-reviewed, replayable forever). Provide the steps (usually from argus_record stop, optionally with per-step expect predicates added) and the success predicates — the golden end condition, ideally network/route consequences rather than DOM presence.",
+  "Persist a flow to .argus/flows/<name>.json (git-reviewed, replayable forever). Provide the steps (usually from argus_record stop, optionally with per-step expect predicates added) and the success predicates — the golden end condition, ideally network/route consequences rather than DOM presence. Event-window predicates (network/console-clean/stream/signal) in a step's expect observe only events AFTER that step started (replay sets since automatically — never hand-set it); add cumulative:true to observe the whole run so far. Success predicates always observe the whole run.",
   {
     name: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/),
     startUrl: z.string().url(),
@@ -520,7 +525,10 @@ registerTool(
         z.object({
           action: ActionSchema,
           anchor: AnchorSchema.optional(),
-          expect: z.array(PredicateSchema).optional(),
+          expect: z
+            .array(PredicateSchema)
+            .optional()
+            .describe("per-step expectations — event-window predicates are step-relative unless cumulative:true"),
           label: z.string().optional(),
         })
       )
@@ -595,7 +603,7 @@ registerTool(
     const flows = loadFlows(names);
     if (flows.length === 0) throw new Error(`no flows found in ${flowsDir()}`);
     return jsonResult(
-      await api("POST", "/v1/flows/verify", { flows, concurrency, baseUrl, project })
+      await api("POST", "/v1/flows/verify", { flows, concurrency, baseUrl, project, actor: actor() })
     );
   }
 );

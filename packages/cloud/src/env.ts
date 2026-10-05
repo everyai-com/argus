@@ -1,5 +1,12 @@
 export interface Env {
   BROWSER: Fetcher;
+  /**
+   * Workers AI binding for the vision decision layer (Clef). Structural and
+   * optional: when absent, the judge degrades to undefined and every
+   * deterministic path runs exactly as before. Enable with
+   * `"ai": { "binding": "AI" }` in wrangler.
+   */
+  AI?: { run(model: string, input: Record<string, unknown>): Promise<unknown> };
   ARTIFACTS: R2Bucket;
   BROWSER_SESSION: DurableObjectNamespace;
   COORDINATOR: DurableObjectNamespace;

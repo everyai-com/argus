@@ -71,11 +71,16 @@ async function api<T>(cfg: Config, method: string, path: string, body?: unknown)
     throw new Error(`API returned non-JSON (${res.status}): ${text.slice(0, 200)}`);
   }
   if (!res.ok) {
-    const err = data as { error?: string; detail?: string };
-    throw new Error(`${err.error ?? res.status}${err.detail ? ` — ${err.detail}` : ""}`);
+    const err = data as { error?: string; detail?: string; retryable?: boolean; remediation?: string };
+    const retry = err.retryable ? " · retryable" : "";
+    const fix = err.remediation ? ` · fix: ${err.remediation}` : "";
+    throw new Error(`${err.error ?? res.status}${err.detail ? ` — ${err.detail}` : ""}${retry}${fix}`);
   }
   return data as T;
 }
+
+/** Run attribution — override with ARGUS_ACTOR (e.g. `ci:verify`). */
+const actor = (): string => process.env.ARGUS_ACTOR ?? "cli";
 
 function printSmokeReport(cfg: Config, report: SmokeReport): void {
   const badge =
@@ -193,6 +198,9 @@ interface LiveCheck {
   name: string;
   status: string;
   detail: string;
+  runId?: string;
+  /** Full API payload — `--json` re-emits it for machine consumers. */
+  report?: unknown;
 }
 
 /** Smoke + audit + flows against one URL — the live core of verify + doctor. */
@@ -216,15 +224,15 @@ async function runLiveChecks(
           cfg,
           "POST",
           "/v1/flows/verify",
-          { flows, baseUrl: url, project, concurrency: 4 }
+          { flows, baseUrl: url, project, concurrency: 4, actor: actor() }
         )
       : Promise.resolve(undefined),
   ]);
   return [
-    { name: "smoke", status: smoke.status, detail: `${smoke.findings.length} finding(s)` },
-    { name: "audit", status: audit.status, detail: `${audit.findings.length} finding(s)` },
+    { name: "smoke", status: smoke.status, detail: `${smoke.findings.length} finding(s)`, runId: smoke.runId, report: smoke },
+    { name: "audit", status: audit.status, detail: `${audit.findings.length} finding(s)`, runId: audit.runId, report: audit },
     ...(suite
-      ? [{ name: "flows", status: suite.status, detail: `${suite.passed} passed, ${suite.failed} failed` }]
+      ? [{ name: "flows", status: suite.status, detail: `${suite.passed} passed, ${suite.failed} failed`, runId: suite.runId, report: suite }]
       : [{ name: "flows", status: "skipped", detail: "no .argus/flows (or --no-flows)" }]),
   ];
 }
@@ -235,23 +243,41 @@ async function main(): Promise<void> {
 
   switch (command) {
     case "verify": {
+      const json = args.includes("--json");
       const url = args.find((a) => !a.startsWith("-"));
       if (!url) {
-        console.error("usage: argus verify <url> [--no-flows]");
+        console.error("usage: argus verify <url> [--no-flows] [--json]");
         process.exit(2);
       }
       const project = basename(process.cwd());
       const flows = args.includes("--no-flows")
         ? []
         : loadFlowFiles(join(process.cwd(), ".argus", "flows"));
-      console.log(
-        dim(
-          `argus → ${cfg.api} · full verification of ${url} ` +
-            `(smoke + audit${flows.length ? ` + ${flows.length} flows` : ""}) ...`
-        )
-      );
+      if (!json) {
+        console.log(
+          dim(
+            `argus → ${cfg.api} · full verification of ${url} ` +
+              `(smoke + audit${flows.length ? ` + ${flows.length} flows` : ""}) ...`
+          )
+        );
+      }
       const checks = await runLiveChecks(cfg, url, flows, project);
       const ok = checks.every((check) => check.status === "pass" || check.status === "skipped");
+      if (json) {
+        // Machine-readable full report: every check's run id + full payload,
+        // plus the executable recovery actions the failures carry.
+        const suite = checks.find((c) => c.name === "flows")?.report as
+          | { results?: Array<{ flow: string; decision?: { verdict?: string; action?: unknown } }> }
+          | undefined;
+        const actions: Array<{ flow: string; verdict: string; action: unknown }> = [];
+        for (const r of suite?.results ?? []) {
+          if (r.decision?.action) {
+            actions.push({ flow: r.flow, verdict: r.decision.verdict ?? "error", action: r.decision.action });
+          }
+        }
+        console.log(JSON.stringify({ url, project, status: ok ? "pass" : "fail", checks, actions }, null, 2));
+        process.exit(ok ? 0 : 1);
+      }
       console.log(`\n${ok ? green(bold(" VERIFY PASS ")) : red(bold(" VERIFY FAIL "))} ${bold(url)}\n`);
       for (const check of checks) {
         const mark = check.status === "pass" ? green("✔") : check.status === "skipped" ? yellow("●") : red("✘");
@@ -748,6 +774,7 @@ async function main(): Promise<void> {
             baseUrl: target,
             project: basename(process.cwd()),
             concurrency: 4,
+            actor: actor(),
           });
           flowsOk = verdict.status === "pass";
           console.log(
@@ -824,6 +851,7 @@ async function main(): Promise<void> {
         baseUrl: target,
         project: basename(process.cwd()),
         concurrency: 4,
+        actor: actor(),
       });
 
       const ok = verdict.status === "pass";
@@ -1061,6 +1089,7 @@ async function main(): Promise<void> {
 
 usage:
   argus verify <url>           automatically run smoke + audit + every saved flow
+  argus verify <url> --json    same, as machine-readable JSON (run ids + full reports)
   argus doctor [--target …]    one command: config, API, auth, fleet, runs, flows, gates
   argus test <url>             run the smoke suite against a URL
   argus test --local <port>    tunnel a local app to the cloud and test it

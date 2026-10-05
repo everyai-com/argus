@@ -24,6 +24,7 @@ import {
   type StreamEvent,
 } from "@argus/shared";
 import { evalPredicate, nearestMatch, resolveAnchor, weakestTier } from "./verify";
+import { triageFlowFailure } from "./judge";
 import { hostOf, loadAuthProfile, saveAuthProfile } from "./auth-store";
 import { rehomeFlow } from "./flow-utils";
 import type { Env } from "./env";
@@ -133,13 +134,22 @@ function bindBuffers(page: Page): Buffers {
   return buf;
 }
 
-/** Rescope event-window predicates to "since this step started" (incl. groups). */
+/**
+ * Rescope event-window predicates to "since this step started" (incl. groups).
+ *
+ * Contract agents rely on: a step's `expect` predicates observe only events
+ * after their step started — replay overwrites any hand-set `since`. The
+ * flow's `success` predicates observe the whole run. A step expectation that
+ * must see earlier events (e.g. "no console error anywhere so far") opts out
+ * with `cumulative: true`, which keeps its `since` untouched.
+ */
 function scopePredicates(predicates: Predicate[], since: number): Predicate[] {
   return predicates.map((p) => {
     if (p.kind === "allOf" || p.kind === "anyOf") {
       return { ...p, predicates: scopePredicates(p.predicates, since) };
     }
     if (p.kind === "network" || p.kind === "console-clean" || p.kind === "stream" || p.kind === "signal") {
+      if ("cumulative" in p && p.cumulative) return p;
       return { ...p, since };
     }
     return p;
@@ -175,6 +185,48 @@ async function candidatesOnPage(page: Page): Promise<string[]> {
     .catch(() => []);
 }
 
+/** Describe up to 5 matched elements so an ambiguous anchor names its candidates. */
+async function describeCandidates(locator: Locator, total: number): Promise<string[]> {
+  try {
+    const infos = (await locator.evaluateAll((els) =>
+      (els as unknown as any[]).slice(0, 5).map((el) => {
+        const text = String(el.textContent ?? "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 60);
+        const testid = el.getAttribute("data-testid");
+        return `${String(el.tagName).toLowerCase()}${testid ? `[data-testid="${testid}"]` : ""}${text ? ` "${text}"` : ""}`;
+      })
+    )) as string[];
+    return total > infos.length ? [...infos, `+${total - infos.length} more`] : infos;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The ambiguity decision — pure so it's unit-testable without a browser.
+ * An anchor matching N>1 elements is an error, never a guess: .first() would
+ * silently drive the wrong element and bless a false green.
+ */
+export function ambiguityDecision(
+  step: number,
+  from: string,
+  via: string,
+  count: number,
+  candidates: string[]
+): { verdict: "ambiguous_anchor"; whatChanged: string; suggestedFix: string; nextAction: string } {
+  const shown = candidates.length ? ` — candidates: ${candidates.join(" · ")}` : "";
+  return {
+    verdict: "ambiguous_anchor",
+    whatChanged: `step ${step}: anchor "${from}" (via ${via}) matched ${count} elements${shown}`,
+    suggestedFix:
+      "tighten the anchor until it matches exactly one element — prefer a unique data-testid, else role+name",
+    nextAction:
+      "disambiguate the anchor in the flow file (or remove the duplicate element from the page) and re-run",
+  };
+}
+
 /**
  * Re-home a flow onto another environment. A suite recorded against prod must
  * be runnable against a version-preview URL without editing every file — that
@@ -184,7 +236,7 @@ async function candidatesOnPage(page: Page): Promise<string[]> {
 export async function replayFlow(
   env: Env,
   flow: Flow,
-  opts: { heal?: boolean; tenantId?: string } = {}
+  opts: { heal?: boolean; tenantId?: string; judge?: boolean } = {}
 ): Promise<ReplayOutcome> {
   const owner = opts.tenantId ?? "_admin";
   const t0 = Date.now();
@@ -235,19 +287,50 @@ export async function replayFlow(
       if (step.anchor) {
         const { locator: found, via } = resolveAnchor(page, step.anchor);
         const matched = await found.count();
+        const from = step.anchor.testid ?? step.anchor.text ?? step.anchor.css ?? `${step.anchor.role}/${step.anchor.name}`;
+        if (matched > 1) {
+          // Ambiguity is an error, never a guess.
+          const key = await finalShot(env, owner, page, flow.name);
+          return await withTriage(env, {
+            flow: flow.name,
+            status: "error",
+            stepsRun: i,
+            failedStep: i,
+            decision: ambiguityDecision(i, from, via, matched, await describeCandidates(found, matched)),
+            durationMs: Date.now() - t0,
+            screenshotKey: key,
+            stepResults,
+          }, { buf, judge: opts.judge });
+        }
         if (matched === 0) {
           // Drift. Name it, find the nearest survivor, decide.
-          const from = step.anchor.testid ?? step.anchor.text ?? step.anchor.css ?? `${step.anchor.role}/${step.anchor.name}`;
           const near = step.anchor.testid
             ? nearestMatch(step.anchor.testid, await candidatesOnPage(page))
             : undefined;
-          if (opts.heal && near && step.anchor.testid) {
+          // A heal target must itself resolve to exactly one element — a
+          // rebind onto an ambiguous (or vanished) id is a guess, not a fix.
+          const healTarget = opts.heal && near && step.anchor.testid ? page.getByTestId(near.value) : undefined;
+          const healCount = healTarget ? await healTarget.count() : 0;
+          if (healTarget && near && step.anchor.testid && healCount === 1) {
             proposals.push({ step: i, from: step.anchor.testid, to: near.value, confidence: near.confidence });
-            locator = page.getByTestId(near.value).first();
+            locator = healTarget.first();
             stepResults.push({ step: i, ok: true, note: `healed ${from} → ${near.value}` });
+          } else if (healTarget && near && healCount > 1) {
+            const key = await finalShot(env, owner, page, flow.name);
+            return await withTriage(env, {
+              flow: flow.name,
+              status: "error",
+              stepsRun: i,
+              failedStep: i,
+              decision: ambiguityDecision(i, near.value, "testid", healCount, await describeCandidates(healTarget, healCount)),
+              durationMs: Date.now() - t0,
+              screenshotKey: key,
+              proposals: proposals.length ? proposals : undefined,
+              stepResults,
+            }, { buf, judge: opts.judge });
           } else {
             const key = await finalShot(env, owner, page, flow.name);
-            return {
+            return await withTriage(env, {
               flow: flow.name,
               status: "drift",
               stepsRun: i,
@@ -261,12 +344,13 @@ export async function replayFlow(
                 nextAction: near
                   ? `run flow heal to rebind, or update the flow if the change was intended`
                   : `re-record this step, or restore the element`,
+                ...(near ? { action: { tool: "argus_flow_heal", args: { name: flow.name } } } : {}),
               },
               durationMs: Date.now() - t0,
               screenshotKey: key,
               proposals: proposals.length ? proposals : undefined,
               stepResults,
-            };
+            }, { buf, judge: opts.judge });
           }
         } else {
           locator = found.first();
@@ -314,7 +398,7 @@ export async function replayFlow(
         }
       } catch (err) {
         const key = await finalShot(env, owner, page, flow.name);
-        return {
+        return await withTriage(env, {
           flow: flow.name,
           status: "error",
           stepsRun: i,
@@ -327,7 +411,7 @@ export async function replayFlow(
           durationMs: Date.now() - t0,
           screenshotKey: key,
           stepResults,
-        };
+        }, { buf, judge: opts.judge });
       }
 
       await page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => {});
@@ -338,7 +422,7 @@ export async function replayFlow(
         const failed = results.filter((r) => !r.pass);
         if (failed.length > 0) {
           const key = await finalShot(env, owner, page, flow.name);
-          return {
+          return await withTriage(env, {
             flow: flow.name,
             status: "error",
             stepsRun: i + 1,
@@ -353,7 +437,7 @@ export async function replayFlow(
             durationMs: Date.now() - t0,
             screenshotKey: key,
             stepResults,
-          };
+          }, { buf, judge: opts.judge });
         }
       }
     }
@@ -364,7 +448,7 @@ export async function replayFlow(
     const key = await finalShot(env, owner, page, flow.name);
 
     if (failedSuccess.length > 0) {
-      return {
+      return await withTriage(env, {
         flow: flow.name,
         status: "error",
         stepsRun: flow.steps.length,
@@ -378,7 +462,7 @@ export async function replayFlow(
         durationMs: Date.now() - t0,
         screenshotKey: key,
         stepResults,
-      };
+      }, { buf, judge: opts.judge });
     }
 
     // A login flow only mints its auth profile once it actually succeeded —
@@ -418,6 +502,44 @@ function requireLocator(locator: Locator | undefined, step: number): Locator {
   return locator;
 }
 
+/**
+ * Attach vision-judge triage to a failed replay. Purely additive: status,
+ * verdict and evidence are already final — triage only adds bug class,
+ * severity and needs-human. Passes never call this (zero cost on green).
+ * The judge can never break a replay: any failure returns the outcome as-is.
+ */
+async function withTriage(
+  env: Env,
+  outcome: ReplayOutcome,
+  ctx: { buf: Buffers; judge?: boolean }
+): Promise<ReplayOutcome> {
+  if (ctx.judge === false || !outcome.decision || !outcome.screenshotKey) return outcome;
+  try {
+    let png: ArrayBuffer | undefined;
+    try {
+      const obj = await env.ARTIFACTS.get(outcome.screenshotKey);
+      if (obj) png = await obj.arrayBuffer();
+    } catch {
+      // Text-only triage: the trace summary alone is still worth judging.
+    }
+    const triage = await triageFlowFailure(env, {
+      verdict: outcome.decision.verdict,
+      whatChanged: outcome.decision.whatChanged,
+      failedStep: outcome.failedStep,
+      stepsRun: outcome.stepsRun,
+      consoleErrors: ctx.buf.console.filter((c) => c.level === "error").map((c) => c.text),
+      failedRequests: ctx.buf.network
+        .filter((n) => n.failed)
+        .map((n) => `${n.method} ${n.url} → ${n.status ?? "failed"}`),
+      screenshotPng: png,
+    });
+    if (triage) outcome.triage = triage;
+  } catch {
+    // Judge abstained — deterministic outcome stands.
+  }
+  return outcome;
+}
+
 async function finalShot(
   env: Env,
   tenantId: string,
@@ -446,7 +568,8 @@ export async function verifyFlows(
   inputFlows: Flow[],
   concurrency = 4,
   baseUrl?: string,
-  tenantId = "_admin"
+  tenantId = "_admin",
+  judge = true
 ): Promise<{
   status: "pass" | "fail";
   total: number;
@@ -468,7 +591,7 @@ export async function verifyFlows(
           if (slot >= indices.length) return;
           const i = indices[slot]!;
           try {
-            results[i] = await replayFlow(env, flows[i]!, { tenantId });
+            results[i] = await replayFlow(env, flows[i]!, { tenantId, judge });
           } catch (err) {
             results[i] = {
               flow: flows[i]!.name,
@@ -494,6 +617,26 @@ export async function verifyFlows(
   flows.forEach((f, i) => (f.saveAuthAs ? authWave : mainWave).push(i));
   if (authWave.length > 0) await runWave(authWave);
   await runWave(mainWave);
+
+  // Point auth failures at their minting flow: the agent can execute the
+  // recovery (replay the login flow, then this suite) without hunting for
+  // which flow saves the missing profile. Rehomed suites carry baseUrl so the
+  // profile mints for the same environment.
+  const authOf = new Map(inputFlows.map((f) => [f.name, f.auth]));
+  const savers = new Map<string, string>();
+  for (const f of inputFlows) if (f.saveAuthAs) savers.set(f.saveAuthAs, f.name);
+  for (const r of results) {
+    const d = r.decision;
+    if (!d || d.verdict !== "auth_profile_missing" || d.action) continue;
+    const profile = authOf.get(r.flow);
+    const saver = profile ? savers.get(profile) : undefined;
+    if (saver) {
+      d.action = {
+        tool: "argus_flow_verify",
+        args: { names: [saver], ...(baseUrl ? { baseUrl } : {}) },
+      };
+    }
+  }
 
   const passed = results.filter((r) => r.status === "ok").length;
   const failed = results.length - passed;

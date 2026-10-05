@@ -119,6 +119,8 @@ Then assert on it: `{ "kind": "signal", "name": "task:added", "minCount": 1 }` o
 | `@argus/sdk is not loaded in this page — add the Vite plugin` | `signal`/`state` predicate used without the SDK | install `@argus/sdk/vite`, add the plugin, restart the dev server, hard-reload |
 | `no .argus/flows — run argus preset cf-saas <url> first` | gating with no flows | generate or record flows first |
 | Flow fails on an anchor / `anchor did not resolve` | element moved or anchor is ambiguous | re-record, or run `argus_flow_heal` (propose) and review; anchors are errors by design, never guesses |
+| `ambiguous_anchor` verdict naming candidates | anchor matches N>1 elements | tighten to a unique `data-testid` (the decision names every candidate); re-run |
+| API error carrying `retryable` / `remediation` | typed error envelope | follow `remediation` first; retry with backoff only when `retryable` is true |
 | Flow passes locally, fails on the preview | flow `startUrl` is stale | re-home with `argus verify <preview-url>` (`baseUrl` re-homes the suite); keep flows environment-agnostic |
 | `429 fleet_saturated` | concurrent browser cap reached | release idle sessions (`argus_release` / `argus sessions`), reduce flow concurrency, or raise the tenant's `reserved`/`burst` |
 | Lease expires mid-flow | lease TTL | keep leases ≤ 540s; stopwatches over 10 min exceed the browser keep-alive |

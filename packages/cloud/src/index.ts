@@ -13,7 +13,9 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import {
+  ActorSchema,
   AuditRequestSchema,
+  apiError,
   CreateTenantRequestSchema,
   FlowSchema,
   LeaseRequestSchema,
@@ -114,14 +116,14 @@ app.use("/v1/*", async (c, next) => {
   const header = c.req.header("authorization") ?? "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : "";
   const tenant = await resolveTenant(c.env, token);
-  if (!tenant) return c.json({ error: "unauthorized" }, 401);
+  if (!tenant) return c.json(apiError("unauthorized"), 401);
   c.set("tenant", tenant);
   await next();
 });
 
 function requireAdmin(c: { get: (k: "tenant") => ResolvedTenant; json: (b: unknown, s?: number) => Response }) {
   const t = c.get("tenant");
-  return t.admin ? null : c.json({ error: "forbidden", detail: "admin token required" }, 403);
+  return t.admin ? null : c.json(apiError("forbidden", "admin token required"), 403);
 }
 
 app.get("/health", (c) => c.json({ ok: true, service: "argus-cloud" }));
@@ -134,7 +136,7 @@ app.all("/mcp", async (c) => {
   const header = c.req.header("authorization") ?? "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : "";
   const tenant = await resolveTenant(c.env, token);
-  if (!tenant) return c.json({ error: "unauthorized" }, 401);
+  if (!tenant) return c.json(apiError("unauthorized"), 401);
   return handleMcp(c.req.raw, {
     env: c.env,
     tenantId: tenant.id,
@@ -151,38 +153,32 @@ app.all("/mcp", async (c) => {
 
 app.on(["POST", "GET"], "/api/auth/*", async (c) => {
   if (!c.env.BETTER_AUTH_SECRET) {
-    return c.json(
-      { error: "auth_not_configured", detail: "set BETTER_AUTH_SECRET on the Worker" },
-      503
-    );
+    return c.json(apiError("auth_not_configured", "set BETTER_AUTH_SECRET on the Worker"), 503);
   }
   const origin = new URL(c.req.url).origin;
   try {
     return await createAuth(c.env, origin).handler(c.req.raw);
   } catch (err) {
     // Never 500 the dashboard: a broken auth layer degrades to "accounts off".
-    return c.json({ error: "auth_unavailable", detail: String(err).slice(0, 200) }, 503);
+    return c.json(apiError("auth_unavailable", String(err).slice(0, 200)), 503);
   }
 });
 
 app.post("/api/mcp-token", async (c) => {
   if (!c.env.BETTER_AUTH_SECRET) {
-    return c.json(
-      { error: "auth_not_configured", detail: "set BETTER_AUTH_SECRET on the Worker" },
-      503
-    );
+    return c.json(apiError("auth_not_configured", "set BETTER_AUTH_SECRET on the Worker"), 503);
   }
   const origin = new URL(c.req.url).origin;
   let auth: ReturnType<typeof createAuth>;
   try {
     auth = createAuth(c.env, origin);
   } catch (err) {
-    return c.json({ error: "auth_unavailable", detail: String(err).slice(0, 200) }, 503);
+    return c.json(apiError("auth_unavailable", String(err).slice(0, 200)), 503);
   }
   const session = await auth.api
     .getSession({ headers: c.req.raw.headers })
     .catch(() => null);
-  if (!session) return c.json({ error: "unauthorized" }, 401);
+  if (!session) return c.json(apiError("unauthorized"), 401);
 
   const tenantId = `u_${session.user.id.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 16) || "user"}`;
   const token = `argus_${crypto.randomUUID().replace(/-/g, "")}${crypto
@@ -208,7 +204,7 @@ app.post("/api/mcp-token", async (c) => {
       method: "POST",
       body: JSON.stringify({ id: tenantId, tokenHash }),
     });
-    if (!rotated.ok) return c.json({ error: "mint_failed", detail: await rotated.text() }, 500);
+    if (!rotated.ok) return c.json(apiError("mint_failed", await rotated.text()), 500);
   }
 
   const mcpUrl = `${origin}/mcp`;
@@ -290,17 +286,17 @@ app.get("/platform/evidence-artifact/*", async (c) => {
 app.post("/platform/github/webhook", async (c) => {
   const secret = c.env.ARGUS_GITHUB_WEBHOOK_SECRET;
   if (!secret || !c.env.ARGUS_GITHUB_APP_ID || !c.env.ARGUS_GITHUB_PRIVATE_KEY) {
-    return c.json({ error: "github_app_not_configured" }, 503);
+    return c.json(apiError("github_app_not_configured"), 503);
   }
   const rawBody = await c.req.text();
   const signature = c.req.header("x-hub-signature-256") ?? "";
   if (!(await verifyGitHubWebhook(rawBody, secret, signature))) {
-    return c.json({ error: "invalid_signature" }, 401);
+    return c.json(apiError("invalid_signature"), 401);
   }
   const event = c.req.header("x-github-event") ?? "";
   const delivery = c.req.header("x-github-delivery") ?? "";
   if (!/^[a-zA-Z0-9-]{8,80}$/.test(delivery)) {
-    return c.json({ error: "invalid_delivery" }, 400);
+    return c.json(apiError("invalid_delivery"), 400);
   }
   const deliveryKey = `platform/github/deliveries/${delivery}.json`;
   if (await c.env.ARTIFACTS.get(deliveryKey)) {
@@ -310,7 +306,7 @@ app.post("/platform/github/webhook", async (c) => {
   try {
     payload = JSON.parse(rawBody) as Record<string, unknown>;
   } catch {
-    return c.json({ error: "invalid_json" }, 400);
+    return c.json(apiError("invalid_json"), 400);
   }
   await c.env.ARTIFACTS.put(
     deliveryKey,
@@ -334,7 +330,7 @@ app.post("/platform/github/webhook", async (c) => {
 
 app.post("/v1/lease", async (c) => {
   const parsed = LeaseRequestSchema.safeParse(await c.req.json().catch(() => ({})));
-  if (!parsed.success) return c.json({ error: "bad_request", detail: parsed.error.message }, 400);
+  if (!parsed.success) return c.json(apiError("bad_request", parsed.error.message), 400);
   const req = parsed.data;
   const tenant = c.get("tenant");
 
@@ -397,9 +393,9 @@ const SESSION_COMMANDS = new Set([
 
 app.post("/v1/session/:id/:command", async (c) => {
   const command = c.req.param("command");
-  if (!SESSION_COMMANDS.has(command)) return c.json({ error: `unknown command ${command}` }, 404);
+  if (!SESSION_COMMANDS.has(command)) return c.json(apiError("unknown_command", command), 404);
   if (!(await canAccessSession(c.env, c.get("tenant"), c.req.param("id")))) {
-    return c.json({ error: "not_found" }, 404);
+    return c.json(apiError("not_found"), 404);
   }
   const stub = c.env.BROWSER_SESSION.get(
     c.env.BROWSER_SESSION.idFromName(c.req.param("id"))
@@ -413,7 +409,7 @@ app.post("/v1/session/:id/:command", async (c) => {
 
 app.delete("/v1/session/:id", async (c) => {
   if (!(await canAccessSession(c.env, c.get("tenant"), c.req.param("id")))) {
-    return c.json({ error: "not_found" }, 404);
+    return c.json(apiError("not_found"), 404);
   }
   const stub = c.env.BROWSER_SESSION.get(
     c.env.BROWSER_SESSION.idFromName(c.req.param("id"))
@@ -426,12 +422,12 @@ app.delete("/v1/session/:id", async (c) => {
 
 app.post("/v1/smoke", async (c) => {
   const parsed = SmokeRequestSchema.safeParse(await c.req.json().catch(() => ({})));
-  if (!parsed.success) return c.json({ error: "bad_request", detail: parsed.error.message }, 400);
+  if (!parsed.success) return c.json(apiError("bad_request", parsed.error.message), 400);
   try {
     const report = await runSmoke(c.env, parsed.data, c.get("tenant").id);
     return c.json(report);
   } catch (err) {
-    return c.json({ error: "smoke_failed", detail: String(err).slice(0, 500) }, 500);
+    return c.json(apiError("smoke_failed", String(err).slice(0, 500)), 500);
   }
 });
 
@@ -443,7 +439,7 @@ app.get("/v1/auth/profiles", async (c) =>
 
 app.delete("/v1/auth/profile/:name", async (c) => {
   const host = c.req.query("host");
-  if (!host) return c.json({ error: "host query param required (profiles are host-scoped)" }, 400);
+  if (!host) return c.json(apiError("bad_request", "host query param required (profiles are host-scoped)"), 400);
   await deleteAuthProfile(c.env, c.get("tenant").id, c.req.param("name"), host);
   return c.json({ ok: true });
 });
@@ -452,12 +448,12 @@ app.delete("/v1/auth/profile/:name", async (c) => {
 
 app.post("/v1/audit", async (c) => {
   const parsed = AuditRequestSchema.safeParse(await c.req.json().catch(() => ({})));
-  if (!parsed.success) return c.json({ error: "bad_request", detail: parsed.error.message }, 400);
+  if (!parsed.success) return c.json(apiError("bad_request", parsed.error.message), 400);
   try {
     const report = await runAudit(c.env, parsed.data, c.get("tenant").id);
     return c.json(report);
   } catch (err) {
-    return c.json({ error: "audit_failed", detail: String(err).slice(0, 500) }, 500);
+    return c.json(apiError("audit_failed", String(err).slice(0, 500)), 500);
   }
 });
 
@@ -466,19 +462,22 @@ app.post("/v1/audit", async (c) => {
 const ReplayRequestSchema = z.object({
   flow: FlowSchema,
   heal: z.boolean().default(false),
+  /** Attach vision-judge triage to failures. Default true; false = pure deterministic. */
+  judge: z.boolean().default(true),
 });
 
 app.post("/v1/flow/replay", async (c) => {
   const parsed = ReplayRequestSchema.safeParse(await c.req.json().catch(() => ({})));
-  if (!parsed.success) return c.json({ error: "bad_request", detail: parsed.error.message }, 400);
+  if (!parsed.success) return c.json(apiError("bad_request", parsed.error.message), 400);
   try {
     const result = await replayFlow(c.env, parsed.data.flow, {
       heal: parsed.data.heal,
       tenantId: c.get("tenant").id,
+      judge: parsed.data.judge,
     });
     return c.json(result);
   } catch (err) {
-    return c.json({ error: "replay_failed", detail: String(err).slice(0, 500) }, 500);
+    return c.json(apiError("replay_failed", String(err).slice(0, 500)), 500);
   }
 });
 
@@ -489,27 +488,36 @@ const VerifyRequestSchema = z.object({
   baseUrl: z.string().url().optional(),
   /** Tag the run so the dashboard can group verdicts per app. */
   project: z.string().max(60).optional(),
+  /** Who/what triggered the run (`cli`, `mcp`, `ci:…`, `agent:…`) — run attribution. */
+  actor: ActorSchema.optional(),
+  /** Attach vision-judge triage to failures. Default true; false = pure deterministic. */
+  judge: z.boolean().default(true),
 });
 
 app.post("/v1/flows/verify", async (c) => {
   const parsed = VerifyRequestSchema.safeParse(await c.req.json().catch(() => ({})));
-  if (!parsed.success) return c.json({ error: "bad_request", detail: parsed.error.message }, 400);
+  if (!parsed.success) return c.json(apiError("bad_request", parsed.error.message), 400);
   try {
+    const tenantId = c.get("tenant").id;
+    const actor = parsed.data.actor ?? "api";
     const verdict = await verifyFlows(
       c.env,
       parsed.data.flows,
       parsed.data.concurrency,
       parsed.data.baseUrl,
-      c.get("tenant").id
+      tenantId,
+      parsed.data.judge
     );
     // Persist the consolidated verdict for the dashboard's run history.
     const runId = crypto.randomUUID().slice(0, 8);
     await c.env.ARTIFACTS.put(
-      `tenants/${c.get("tenant").id}/runs/${runId}/flows-verdict.json`,
+      `tenants/${tenantId}/runs/${runId}/flows-verdict.json`,
       JSON.stringify({
         runId,
         at: new Date().toISOString(),
         project: parsed.data.project,
+        tenantId,
+        actor,
         baseUrl: parsed.data.baseUrl,
         ...verdict,
       }),
@@ -519,16 +527,17 @@ app.post("/v1/flows/verify", async (c) => {
       runId,
       kind: "flows",
       project: parsed.data.project,
-      tenantId: c.get("tenant").id,
+      tenantId,
+      actor,
       url: parsed.data.baseUrl ?? parsed.data.flows[0]?.startUrl ?? "",
       status: verdict.status,
       at: new Date().toISOString(),
       passed: verdict.passed,
       failed: verdict.failed,
     });
-    return c.json({ runId, ...verdict });
+    return c.json({ runId, actor, ...verdict });
   } catch (err) {
-    return c.json({ error: "verify_failed", detail: String(err).slice(0, 500) }, 500);
+    return c.json(apiError("verify_failed", String(err).slice(0, 500)), 500);
   }
 });
 
@@ -548,11 +557,11 @@ app.get("/v1/fleet", async (c) => {
 app.get("/v1/run/:id", async (c) => {
   const runId = c.req.param("id");
   const metaObj = await c.env.ARTIFACTS.get(`runs/${runId}/meta.json`);
-  if (!metaObj) return c.json({ error: "not_found" }, 404);
+  if (!metaObj) return c.json(apiError("not_found"), 404);
   const meta = (await metaObj.json()) as { tenantId?: string };
   const owner = meta.tenantId ?? "_admin";
   const tenant = c.get("tenant");
-  if (!tenant.admin && owner !== tenant.id) return c.json({ error: "not_found" }, 404);
+  if (!tenant.admin && owner !== tenant.id) return c.json(apiError("not_found"), 404);
   const prefix = `tenants/${owner}/runs/${runId}/`;
   const objects = await c.env.ARTIFACTS.list({ prefix });
   const result: Record<string, unknown> = { runId, files: objects.objects.map((o) => o.key) };
@@ -591,8 +600,8 @@ app.post("/v1/admin/tenants", async (c) => {
   const forbidden = requireAdmin(c);
   if (forbidden) return forbidden;
   const parsed = CreateTenantRequestSchema.safeParse(await c.req.json().catch(() => ({})));
-  if (!parsed.success) return c.json({ error: "bad_request", detail: parsed.error.message }, 400);
-  if (parsed.data.id === ADMIN_TENANT) return c.json({ error: "reserved_id", detail: `${ADMIN_TENANT} is reserved` }, 400);
+  if (!parsed.success) return c.json(apiError("bad_request", parsed.error.message), 400);
+  if (parsed.data.id === ADMIN_TENANT) return c.json(apiError("reserved_id", `${ADMIN_TENANT} is reserved`), 400);
 
   // Mint the token here; only its hash leaves the Worker. Shown to the admin once.
   const token = `argus_${crypto.randomUUID().replace(/-/g, "")}${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
@@ -610,7 +619,7 @@ app.patch("/v1/admin/tenant/:id", async (c) => {
   const forbidden = requireAdmin(c);
   if (forbidden) return forbidden;
   const parsed = UpdateTenantRequestSchema.safeParse(await c.req.json().catch(() => ({})));
-  if (!parsed.success) return c.json({ error: "bad_request", detail: parsed.error.message }, 400);
+  if (!parsed.success) return c.json(apiError("bad_request", parsed.error.message), 400);
   const res = await coordinator(c.env).fetch("https://do/tenant-update", {
     method: "POST",
     body: JSON.stringify({ id: c.req.param("id"), patch: parsed.data }),
@@ -638,20 +647,20 @@ app.get("/v1/flows", async (c) =>
 
 app.get("/v1/flows/:name", async (c) => {
   const flow = await getFlow(c.env, c.get("tenant").id, c.req.param("name"));
-  return flow ? c.json(flow) : c.json({ error: "not_found" }, 404);
+  return flow ? c.json(flow) : c.json(apiError("not_found"), 404);
 });
 
 app.put("/v1/flows/:name", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const parsed = FlowSchema.safeParse({ version: 1, ...body, name: c.req.param("name") });
-  if (!parsed.success) return c.json({ error: "bad_request", detail: parsed.error.message }, 400);
+  if (!parsed.success) return c.json(apiError("bad_request", parsed.error.message), 400);
   await putFlow(c.env, c.get("tenant").id, parsed.data);
   return c.json({ saved: parsed.data.name, steps: parsed.data.steps.length });
 });
 
 app.delete("/v1/flows/:name", async (c) => {
   const removed = await deleteFlow(c.env, c.get("tenant").id, c.req.param("name"));
-  return removed ? c.json({ ok: true }) : c.json({ error: "not_found" }, 404);
+  return removed ? c.json({ ok: true }) : c.json(apiError("not_found"), 404);
 });
 
 // --- artifacts (screenshots, reports) ---------------------------------------
@@ -660,10 +669,10 @@ app.get("/v1/artifact/*", async (c) => {
   const key = c.req.path.replace("/v1/artifact/", "");
   const tenant = c.get("tenant");
   if (!tenant.admin && !key.startsWith(`tenants/${tenant.id}/`)) {
-    return c.json({ error: "not_found" }, 404);
+    return c.json(apiError("not_found"), 404);
   }
   const obj = await c.env.ARTIFACTS.get(key);
-  if (!obj) return c.json({ error: "not_found" }, 404);
+  if (!obj) return c.json(apiError("not_found"), 404);
   return new Response(obj.body, {
     headers: {
       "content-type": obj.httpMetadata?.contentType ?? "application/octet-stream",

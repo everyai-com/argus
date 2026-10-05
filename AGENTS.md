@@ -68,6 +68,15 @@ dashboard hosting), `packages/cli`, `packages/mcp`, `packages/dashboard`,
   extra object on one side: `argus_act` shipped as `action: ActionSchema` (double
   `action.action`) so the only input MCP accepted was one `/v1` rejects — every call
   failed. `packages/cloud/src/mcp-parity.e2e.test.ts` enforces this.
+- Vision decision layer (`judge.ts`, Clef via the Workers AI binding):
+  judgments refine heuristic severities and attach additive triage — never
+  predicate verdicts. Every judge call degrades to `undefined` (no binding,
+  timeout, malformed response, low confidence) and the deterministic result
+  stands; raw signals (diffRatio, predicate evidence) are always preserved
+  beside the judgment. Confidence gates live in `judge.ts` (noise suppression
+  0.85 / grade apply 0.5 / inconclusive 0.35) — recalibrate from production
+  traffic, don't guess. Audit judging runs after browser release, in parallel;
+  replay triage runs on failures only (passes pay zero).
 
 ## Harness support
 

@@ -365,7 +365,7 @@ async function runFlowSuite(
   const at = new Date().toISOString();
   await env.ARTIFACTS.put(
     `tenants/${tenantId}/runs/${runId}/flows-verdict.json`,
-    JSON.stringify({ runId, at, project, baseUrl: targetUrl, ...verdict }),
+    JSON.stringify({ runId, at, project, tenantId, actor: "github-app", baseUrl: targetUrl, ...verdict }),
     { httpMetadata: { contentType: "application/json" } }
   );
   await writeRunMeta(env, {
@@ -373,6 +373,7 @@ async function runFlowSuite(
     kind: "flows",
     project,
     tenantId,
+    actor: "github-app",
     url: targetUrl,
     status: verdict.status,
     at,
@@ -539,6 +540,7 @@ export async function runGitHubVerification(
               checks: ["a11y", "perf", "links", "visual"],
               updateBaseline: false,
               authProfile: resolvedConfig.authProfile,
+              judge: true,
             },
             tenantId
           )

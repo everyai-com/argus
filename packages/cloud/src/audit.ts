@@ -23,6 +23,12 @@ import {
 } from "@argus/shared";
 import { hostOf, loadAuthProfile } from "./auth-store";
 import { writeRunMeta } from "./runs";
+import {
+  adjudicateVisualDiff,
+  gradeFindings,
+  GRADE_APPLY_CONFIDENCE,
+  NOISE_SUPPRESS_CONFIDENCE,
+} from "./judge";
 import type { Env } from "./env";
 
 const AXE_SOURCE_URL = "https://cdn.jsdelivr.net/npm/axe-core@4.10.2/axe.min.js";
@@ -89,6 +95,16 @@ export async function runAudit(env: Env, req: AuditRequest, tenantId?: string): 
   let a11yViolations = 0;
   let findingSeq = 0;
   const fid = () => `f-${runId}-${++findingSeq}`;
+  // Vision-judge work collected during the loop, executed after the browser
+  // is released so judging never holds a browser lease.
+  const pendingVisual: Array<{
+    entry: VisualDiff;
+    finding: Finding;
+    currentPng: ArrayBufferLike;
+    baselinePng: ArrayBufferLike;
+    diffRatio: number;
+  }> = [];
+  const gradable: Finding[] = [];
 
   const baseKey =
     req.baselineKey ??
@@ -283,7 +299,8 @@ export async function runAudit(env: Env, req: AuditRequest, tenantId?: string): 
             await env.ARTIFACTS.put(blKey, png, { httpMetadata: { contentType: "image/png" } });
             visual.push({ viewport, colorScheme, status: "baseline-created", currentKey, baselineKey: blKey });
           } else {
-            const curImg = UPNG.decode(png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength));
+            const currentBuf = png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength);
+            const curImg = UPNG.decode(currentBuf);
             const baseBuf = await baseline.arrayBuffer();
             const baseImg = UPNG.decode(baseBuf);
             if (curImg.width !== baseImg.width || curImg.height !== baseImg.height) {
@@ -302,7 +319,7 @@ export async function runAudit(env: Env, req: AuditRequest, tenantId?: string): 
                 await env.ARTIFACTS.put(diffKey, diffPng, {
                   httpMetadata: { contentType: "image/png" },
                 });
-                visual.push({
+                const entry: VisualDiff = {
                   viewport,
                   colorScheme,
                   status: "diff",
@@ -310,8 +327,9 @@ export async function runAudit(env: Env, req: AuditRequest, tenantId?: string): 
                   currentKey,
                   baselineKey: blKey,
                   diffKey,
-                });
-                findings.push({
+                };
+                visual.push(entry);
+                const finding: Finding = {
                   id: fid(),
                   severity: ratio > 0.05 ? "major" : "minor",
                   category: "visual",
@@ -321,7 +339,17 @@ export async function runAudit(env: Env, req: AuditRequest, tenantId?: string): 
                     whatChanged: "the rendered page no longer matches the approved baseline",
                     nextAction: "inspect the diff image — approve with updateBaseline:true if intended, otherwise fix the regression",
                   },
-                });
+                };
+                findings.push(finding);
+                if (req.judge !== false) {
+                  pendingVisual.push({
+                    entry,
+                    finding,
+                    currentPng: currentBuf,
+                    baselinePng: baseBuf,
+                    diffRatio: ratio,
+                  });
+                }
               } else {
                 visual.push({ viewport, colorScheme, status: "match", diffRatio: 0, currentKey, baselineKey: blKey });
               }
@@ -336,7 +364,7 @@ export async function runAudit(env: Env, req: AuditRequest, tenantId?: string): 
         consoleErrors += pageErrors.length;
         failedRequests += pageFails.length;
         for (const text of pageErrors.slice(0, 5)) {
-          findings.push({
+          const finding: Finding = {
             id: fid(),
             severity: "major",
             category: "console-error",
@@ -347,10 +375,12 @@ export async function runAudit(env: Env, req: AuditRequest, tenantId?: string): 
               whatChanged: "the page logged an error during load",
               nextAction: "reproduce and fix — silent errors mask real breakage",
             },
-          });
+          };
+          findings.push(finding);
+          if (req.judge !== false) gradable.push(finding);
         }
         for (const text of pageFails.slice(0, 5)) {
-          findings.push({
+          const finding: Finding = {
             id: fid(),
             severity: "major",
             category: "network-failure",
@@ -361,7 +391,9 @@ export async function runAudit(env: Env, req: AuditRequest, tenantId?: string): 
               whatChanged: "a request returned ≥400 or failed during load",
               nextAction: "check the endpoint — usually a broken API route or missing asset",
             },
-          });
+          };
+          findings.push(finding);
+          if (req.judge !== false) gradable.push(finding);
         }
 
         // ---- links (collect + check once, FROM THE PAGE) -----------------
@@ -409,6 +441,18 @@ export async function runAudit(env: Env, req: AuditRequest, tenantId?: string): 
     }
   } finally {
     await releasePooledBrowser(env, browser);
+  }
+
+  // ---- vision judge (browser already released; every call in parallel) ---
+  // Adjudication refines heuristic severities only — pixel diffs, console
+  // errors and failed requests are all still recorded above. When the judge
+  // abstains (no AI binding, timeout, low confidence) the deterministic
+  // result stands untouched.
+  if (req.judge !== false && (pendingVisual.length > 0 || gradable.length > 0)) {
+    await Promise.all([
+      ...pendingVisual.map((p) => adjudicateOne(env, req.url, p)),
+      gradeBatch(env, gradable),
+    ]);
   }
 
   // ---- broken-link findings ----------------------------------------------
@@ -471,4 +515,98 @@ export async function runAudit(env: Env, req: AuditRequest, tenantId?: string): 
   });
 
   return report;
+}
+
+interface PendingAdjudication {
+  entry: VisualDiff;
+  finding: Finding;
+  currentPng: ArrayBufferLike;
+  baselinePng: ArrayBufferLike;
+  diffRatio: number;
+}
+
+async function adjudicateOne(env: Env, url: string, p: PendingAdjudication): Promise<void> {
+  let judgment;
+  try {
+    judgment = await adjudicateVisualDiff(env, {
+      baselinePng: p.baselinePng,
+      currentPng: p.currentPng,
+      diffRatio: p.diffRatio,
+      viewport: p.entry.viewport,
+      url,
+    });
+  } catch {
+    return;
+  }
+  if (!judgment) return;
+  p.entry.judgment = judgment;
+  const pct = Math.round(judgment.confidence * 100);
+  const orig = p.finding.severity;
+
+  if (judgment.verdict === "rendering_noise" && judgment.confidence >= NOISE_SUPPRESS_CONFIDENCE) {
+    p.finding.severity = "info";
+    p.finding.judged = {
+      severity: "info",
+      confidence: judgment.confidence,
+      model: judgment.model,
+      note: `was ${orig} — vision judge calls this rendering noise (${pct}%)`,
+    };
+    p.finding.decision = {
+      whatChanged: "pixels differ from baseline, but only rendering noise a user would not notice",
+      nextAction: "no action needed — approve the baseline at will, or leave it",
+    };
+  } else if (
+    judgment.verdict === "content_change" &&
+    judgment.confidence >= GRADE_APPLY_CONFIDENCE &&
+    (orig === "critical" || orig === "major")
+  ) {
+    p.finding.severity = "minor";
+    p.finding.judged = {
+      severity: "minor",
+      confidence: judgment.confidence,
+      model: judgment.model,
+      note: `was ${orig} — same layout, legitimately different content (${pct}%)`,
+    };
+  } else if (
+    judgment.verdict === "real_regression" &&
+    judgment.confidence >= GRADE_APPLY_CONFIDENCE &&
+    judgment.severity !== "none" &&
+    judgment.severity !== orig
+  ) {
+    p.finding.severity = judgment.severity;
+    p.finding.judged = {
+      severity: judgment.severity,
+      confidence: judgment.confidence,
+      model: judgment.model,
+      note: `was ${orig} — vision-judged ${judgment.severity} (${pct}%)`,
+    };
+  }
+  // Inconclusive or under-confident: deterministic severity stands, and the
+  // judgment stays on the visual entry for transparency.
+}
+
+async function gradeBatch(env: Env, findings: Finding[]): Promise<void> {
+  if (findings.length === 0) return;
+  let out;
+  try {
+    out = await gradeFindings(
+      env,
+      findings.map((f) => ({ id: f.id, category: f.category, summary: f.summary, detail: f.detail }))
+    );
+  } catch {
+    return;
+  }
+  if (!out) return;
+  for (const f of findings) {
+    const g = out.grades[f.id];
+    if (!g || g.confidence < GRADE_APPLY_CONFIDENCE || g.severity === f.severity) continue;
+    const orig = f.severity;
+    f.severity = g.severity;
+    f.judged = {
+      severity: g.severity,
+      confidence: g.confidence,
+      model: out.model,
+      note: `was ${orig}`,
+    };
+  }
 }
