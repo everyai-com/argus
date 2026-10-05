@@ -9,6 +9,9 @@
  * passes that server's own tests while making every real call fail — the drift
  * this test refuses.
  */
+// The package's tsconfig scopes `types` to workers-types so worker code can't
+// accidentally use Node APIs; this Node-side test opts back into node types.
+/// <reference types="node" />
 import { resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
