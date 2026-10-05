@@ -15,6 +15,7 @@ import process from "node:process";
 import type { SmokeReport } from "@argus/shared";
 import { buildCfSaasFlows, probeApp } from "./preset";
 import { wireHarnesses, mcpServerPath } from "./harness";
+import { compareVersions, npmLatest, validateFlowFile } from "./doctor";
 
 // --- tiny ANSI helpers (no deps) -------------------------------------------
 const isTTY = process.stdout.isTTY;
@@ -180,6 +181,54 @@ function resolveEnvPlaceholders<T>(value: T): T {
   return out;
 }
 
+/** Load + placeholder-resolve every flow file in a directory ([] when absent). */
+function loadFlowFiles(flowsPath: string): unknown[] {
+  if (!existsSync(flowsPath)) return [];
+  return readdirSync(flowsPath)
+    .filter((file) => file.endsWith(".json"))
+    .map((file) => resolveEnvPlaceholders(JSON.parse(readFileSync(join(flowsPath, file), "utf8"))));
+}
+
+interface LiveCheck {
+  name: string;
+  status: string;
+  detail: string;
+}
+
+/** Smoke + audit + flows against one URL — the live core of verify + doctor. */
+async function runLiveChecks(
+  cfg: Config,
+  url: string,
+  flows: unknown[],
+  project: string
+): Promise<LiveCheck[]> {
+  const [smoke, audit, suite] = await Promise.all([
+    api<{ status: string; findings: unknown[]; runId: string }>(cfg, "POST", "/v1/smoke", {
+      url,
+      project,
+    }),
+    api<{ status: string; findings: unknown[]; runId: string }>(cfg, "POST", "/v1/audit", {
+      url,
+      project,
+    }),
+    flows.length
+      ? api<{ status: string; passed: number; failed: number; runId: string }>(
+          cfg,
+          "POST",
+          "/v1/flows/verify",
+          { flows, baseUrl: url, project, concurrency: 4 }
+        )
+      : Promise.resolve(undefined),
+  ]);
+  return [
+    { name: "smoke", status: smoke.status, detail: `${smoke.findings.length} finding(s)` },
+    { name: "audit", status: audit.status, detail: `${audit.findings.length} finding(s)` },
+    ...(suite
+      ? [{ name: "flows", status: suite.status, detail: `${suite.passed} passed, ${suite.failed} failed` }]
+      : [{ name: "flows", status: "skipped", detail: "no .argus/flows (or --no-flows)" }]),
+  ];
+}
+
 async function main(): Promise<void> {
   const [, , command, ...args] = process.argv;
   const cfg = loadConfig();
@@ -192,46 +241,16 @@ async function main(): Promise<void> {
         process.exit(2);
       }
       const project = basename(process.cwd());
-      const flowsPath = join(process.cwd(), ".argus", "flows");
-      const flows =
-        !args.includes("--no-flows") && existsSync(flowsPath)
-          ? readdirSync(flowsPath)
-              .filter((file) => file.endsWith(".json"))
-              .map((file) =>
-                resolveEnvPlaceholders(JSON.parse(readFileSync(join(flowsPath, file), "utf8")))
-              )
-          : [];
+      const flows = args.includes("--no-flows")
+        ? []
+        : loadFlowFiles(join(process.cwd(), ".argus", "flows"));
       console.log(
         dim(
           `argus → ${cfg.api} · full verification of ${url} ` +
             `(smoke + audit${flows.length ? ` + ${flows.length} flows` : ""}) ...`
         )
       );
-      const [smoke, audit, suite] = await Promise.all([
-        api<{ status: string; findings: unknown[]; runId: string }>(cfg, "POST", "/v1/smoke", {
-          url,
-          project,
-        }),
-        api<{ status: string; findings: unknown[]; runId: string }>(cfg, "POST", "/v1/audit", {
-          url,
-          project,
-        }),
-        flows.length
-          ? api<{ status: string; passed: number; failed: number; runId: string }>(
-              cfg,
-              "POST",
-              "/v1/flows/verify",
-              { flows, baseUrl: url, project, concurrency: 4 }
-            )
-          : Promise.resolve(undefined),
-      ]);
-      const checks = [
-        { name: "smoke", status: smoke.status, detail: `${smoke.findings.length} finding(s)` },
-        { name: "audit", status: audit.status, detail: `${audit.findings.length} finding(s)` },
-        ...(suite
-          ? [{ name: "flows", status: suite.status, detail: `${suite.passed} passed, ${suite.failed} failed` }]
-          : [{ name: "flows", status: "skipped", detail: "no .argus/flows (or --no-flows)" }]),
-      ];
+      const checks = await runLiveChecks(cfg, url, flows, project);
       const ok = checks.every((check) => check.status === "pass" || check.status === "skipped");
       console.log(`\n${ok ? green(bold(" VERIFY PASS ")) : red(bold(" VERIFY FAIL "))} ${bold(url)}\n`);
       for (const check of checks) {
@@ -240,6 +259,234 @@ async function main(): Promise<void> {
       }
       console.log();
       process.exit(ok ? 0 : 1);
+      break;
+    }
+    case "doctor": {
+      // argus doctor [--target <url> | --local <port>] [--offline]
+      // One command that checks every possibility: config, API health, auth,
+      // fleet headroom, recent run history, flow files, the app itself, repo
+      // gates, and Cloudflare dependency drift. Exit 1 on any failure.
+      const offline = args.includes("--offline");
+      const targetFlag = args.indexOf("--target");
+      const localFlag = args.indexOf("--local");
+      const target = targetFlag === -1 ? undefined : args[targetFlag + 1];
+      const localPort = localFlag === -1 ? undefined : Number(args[localFlag + 1]);
+      if (
+        (targetFlag !== -1 && (!target || target.startsWith("-"))) ||
+        (localFlag !== -1 && !Number.isInteger(localPort)) ||
+        (target && localFlag !== -1)
+      ) {
+        console.error("usage: argus doctor [--target <url> | --local <port>] [--offline]");
+        process.exit(2);
+      }
+      if (offline && (target || localFlag !== -1)) {
+        console.error("argus doctor: --offline cannot verify a live target");
+        process.exit(2);
+      }
+      type Row = { name: string; state: "pass" | "warn" | "fail" | "skip"; detail: string };
+      const rows: Row[] = [];
+      const mark = (s: Row["state"]): string =>
+        s === "pass" ? green("✔") : s === "fail" ? red("✘") : s === "warn" ? yellow("●") : dim("○");
+      const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e)).slice(0, 160);
+
+      console.log(bold("argus doctor") + dim(`  ${cfg.api}${offline ? " · offline" : ""}`));
+
+      // 1. config — the token itself is never printed
+      rows.push(
+        cfg.token
+          ? { name: "config", state: "pass", detail: `api ${cfg.api} · token •••set•••` }
+          : { name: "config", state: "fail", detail: "no token — set ARGUS_TOKEN or .argus/config.json" }
+      );
+
+      // 2-5. live API checks (no browsers consumed)
+      if (offline) {
+        for (const name of ["api health", "auth", "fleet", "recent runs"]) {
+          rows.push({ name, state: "skip", detail: "offline" });
+        }
+      } else {
+        try {
+          const health = await api<{ ok: boolean; service: string }>(cfg, "GET", "/health");
+          rows.push({
+            name: "api health",
+            state: health.ok ? "pass" : "fail",
+            detail: health.service || "answered",
+          });
+        } catch (e) {
+          rows.push({ name: "api health", state: "fail", detail: errText(e) });
+        }
+        try {
+          const sessions = await api<{ sessions: unknown[] }>(cfg, "GET", "/v1/sessions");
+          rows.push({
+            name: "auth",
+            state: "pass",
+            detail: `token accepted · ${sessions.sessions.length} active session(s)`,
+          });
+        } catch (e) {
+          rows.push({ name: "auth", state: "fail", detail: errText(e) });
+        }
+        try {
+          const fleet = await api<{ active: number; cap: number; warm: number; warmCap: number }>(
+            cfg,
+            "GET",
+            "/v1/capacity"
+          );
+          rows.push(
+            fleet.active >= fleet.cap
+              ? { name: "fleet", state: "warn", detail: `saturated ${fleet.active}/${fleet.cap}` }
+              : {
+                  name: "fleet",
+                  state: "pass",
+                  detail: `${fleet.active}/${fleet.cap} browsers · warm ${fleet.warm}/${fleet.warmCap}`,
+                }
+          );
+        } catch (e) {
+          rows.push({ name: "fleet", state: "fail", detail: errText(e) });
+        }
+        try {
+          const runs = await api<{ runs: Array<{ runId: string; kind: string; status: string }> }>(
+            cfg,
+            "GET",
+            "/v1/runs"
+          );
+          const recent = runs.runs.slice(0, 5);
+          const bad = recent.filter((r) => r.status === "fail" || r.status === "error");
+          rows.push(
+            recent.length === 0
+              ? { name: "recent runs", state: "warn", detail: "no runs recorded yet" }
+              : bad.length > 0
+                ? {
+                    name: "recent runs",
+                    state: "fail",
+                    detail: bad.map((r) => `${r.runId} ${r.kind} ${r.status.toUpperCase()}`).join(", "),
+                  }
+                : { name: "recent runs", state: "pass", detail: `last ${recent.length} all pass` }
+          );
+        } catch (e) {
+          rows.push({ name: "recent runs", state: "fail", detail: errText(e) });
+        }
+      }
+
+      // 6. flow files, statically (safe offline)
+      const flowsPath = join(process.cwd(), ".argus", "flows");
+      if (!existsSync(flowsPath)) {
+        rows.push({ name: "flows", state: "skip", detail: "no .argus/flows" });
+      } else {
+        const files = readdirSync(flowsPath).filter((file) => file.endsWith(".json"));
+        const problems: string[] = [];
+        for (const file of files) {
+          try {
+            const raw: unknown = JSON.parse(readFileSync(join(flowsPath, file), "utf8"));
+            for (const issue of validateFlowFile(file, raw)) {
+              problems.push(`${issue.file}: ${issue.issue}`);
+            }
+          } catch {
+            problems.push(`${file}: invalid JSON`);
+          }
+        }
+        rows.push(
+          problems.length > 0
+            ? { name: "flows", state: "fail", detail: problems.slice(0, 3).join("; ") }
+            : { name: "flows", state: "pass", detail: `${files.length} valid` }
+        );
+      }
+
+      // 7. the app itself, live through the cloud browsers
+      let tunnel: { url: string; child: ChildProcess } | undefined;
+      try {
+        if (!target && localFlag === -1) {
+          rows.push({ name: "app", state: "skip", detail: "pass --target <url> or --local <port>" });
+        } else {
+          let url = target as string;
+          if (localFlag !== -1) {
+            console.log(dim(`starting tunnel to localhost:${localPort} ...`));
+            tunnel = await startTunnel(localPort as number);
+            console.log(dim(`tunnel up: ${tunnel.url}`));
+            url = tunnel.url;
+          }
+          const flows = loadFlowFiles(flowsPath);
+          const checks = await runLiveChecks(cfg, url, flows, basename(process.cwd()));
+          for (const check of checks) {
+            rows.push({
+              name: `app ${check.name}`,
+              state: check.status === "pass" ? "pass" : check.status === "skipped" ? "skip" : "fail",
+              detail: `${url} (${check.detail})`,
+            });
+          }
+        }
+      } finally {
+        tunnel?.child.kill();
+      }
+
+      // 8-9. repo-only checks (local gates + Cloudflare drift)
+      const isRepo =
+        existsSync(join(process.cwd(), "pnpm-workspace.yaml")) &&
+        (() => {
+          try {
+            return (
+              (JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as { name?: string })
+                .name === "argus"
+            );
+          } catch {
+            return false;
+          }
+        })();
+      const cloudPkgPath = join(process.cwd(), "packages", "cloud", "package.json");
+      if (!isRepo) {
+        rows.push({ name: "repo gates", state: "skip", detail: "not the argus monorepo" });
+        rows.push({ name: "cf versions", state: "skip", detail: "not the argus monorepo" });
+      } else if (offline) {
+        rows.push({ name: "repo gates", state: "skip", detail: "offline" });
+        rows.push({ name: "cf versions", state: "skip", detail: "offline" });
+      } else {
+        const gates = spawnSync("pnpm", ["check"], { encoding: "utf8", timeout: 300_000 });
+        rows.push(
+          gates.status === 0
+            ? { name: "repo gates", state: "pass", detail: "pnpm check (typecheck + test + build)" }
+            : {
+                name: "repo gates",
+                state: "fail",
+                detail: `pnpm check exited ${gates.status ?? "timeout"} — run it for details`,
+              }
+        );
+        try {
+          const cloudPkg = JSON.parse(readFileSync(cloudPkgPath, "utf8")) as {
+            dependencies?: Record<string, string>;
+            devDependencies?: Record<string, string>;
+          };
+          const pins = [
+            ["wrangler", cloudPkg.devDependencies?.["wrangler"]],
+            ["@cloudflare/workers-types", cloudPkg.devDependencies?.["@cloudflare/workers-types"]],
+            ["@cloudflare/playwright", cloudPkg.dependencies?.["@cloudflare/playwright"]],
+          ].filter((entry): entry is [string, string] => typeof entry[1] === "string");
+          const drift = (
+            await Promise.all(
+              pins.map(async ([name, pinned]) => ({ name, pinned, latest: await npmLatest(name) }))
+            )
+          ).filter((r) => r.latest !== undefined && compareVersions(r.pinned, r.latest) === "behind");
+          rows.push(
+            drift.length > 0
+              ? {
+                  name: "cf versions",
+                  state: "warn",
+                  detail: drift.map((d) => `${d.name} ${d.pinned} → ${d.latest}`).join(", "),
+                }
+              : { name: "cf versions", state: "pass", detail: "wrangler, workers-types, playwright current" }
+          );
+        } catch {
+          rows.push({ name: "cf versions", state: "skip", detail: "could not read cloud package.json" });
+        }
+      }
+
+      for (const row of rows) {
+        console.log(`  ${mark(row.state)} ${row.name}: ${row.detail}`);
+      }
+      const fails = rows.filter((row) => row.state === "fail").length;
+      console.log(
+        `\n${fails ? red(bold(" DOCTOR FAIL ")) : green(bold(" DOCTOR PASS "))} ${
+          fails ? `${fails} check(s) failing` : "everything checks out"
+        }\n`
+      );
+      process.exit(fails ? 1 : 0);
       break;
     }
     case "test": {
@@ -819,6 +1066,7 @@ async function main(): Promise<void> {
 
 usage:
   argus verify <url>           automatically run smoke + audit + every saved flow
+  argus doctor [--target …]    one command: config, API, auth, fleet, runs, flows, gates
   argus test <url>             run the smoke suite against a URL
   argus test --local <port>    tunnel a local app to the cloud and test it
   argus audit <url>            full audit: a11y, perf, links, visual regression

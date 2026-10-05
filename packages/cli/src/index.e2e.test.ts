@@ -20,4 +20,15 @@ describe("CLI executable", () => {
     expect(output).toContain("•••set•••");
     expect(output).not.toContain("do-not-print");
   });
+
+  it("doctor --offline checks the static surface without network or secrets", () => {
+    const output = execFileSync(process.execPath, [cli, "doctor", "--offline"], {
+      encoding: "utf8",
+      env: { ...process.env, ARGUS_API: "https://argus.example", ARGUS_TOKEN: "do-not-print" },
+    });
+    expect(output).toContain("argus doctor");
+    expect(output).toContain("DOCTOR PASS");
+    expect(output).toContain("flows: 3 valid");
+    expect(output).not.toContain("do-not-print");
+  });
 });
