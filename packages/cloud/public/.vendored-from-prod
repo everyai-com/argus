@@ -1,0 +1,14 @@
+VENDORED BUILD — the dashboard redesign source is missing (as of 2026-10-05).
+
+packages/cloud/public/ is a byte-copy of the production dashboard bundle
+downloaded from https://argus-cloud.everyai-com.workers.dev/ — it is NOT the
+output of the dashboard build (that builds the OLD top-tab UI from
+packages/dashboard/src/).
+
+DO NOT promote a fresh dashboard build into this directory: it would regress
+production's sidebar UI on the next deploy. The `promote` script refuses while
+this marker exists.
+
+Recovery: if the redesign source resurfaces (another checkout, branch, or
+machine), commit it under packages/dashboard/src/, delete this marker,
+rebuild, promote, verify, and deploy.
