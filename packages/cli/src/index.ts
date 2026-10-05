@@ -14,7 +14,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import process from "node:process";
 import type { SmokeReport } from "@argus/shared";
 import { buildCfSaasFlows, probeApp } from "./preset";
-import { wireHarnesses, mcpServerPath } from "./harness";
+import { wireHarnesses, mcpServerPath, parseInitArgs } from "./harness";
 import { compareVersions, npmLatest, validateFlowFile } from "./doctor";
 
 // --- tiny ANSI helpers (no deps) -------------------------------------------
@@ -620,17 +620,12 @@ async function main(): Promise<void> {
     }
     case "init": {
       // argus init <api-url> <token> [--harness all|csv] [--write-global]
-      const harnessIdx = args.indexOf("--harness");
-      const harnessSel = harnessIdx !== -1 ? args[harnessIdx + 1] : undefined;
-      const writeGlobal = args.includes("--write-global");
-      const positional = args.filter((a, i) => !a.startsWith("-") && i !== harnessIdx + 1);
-      const [apiUrl, token] = positional;
-      if (!apiUrl || !token) {
-        console.error(
-          "usage: argus init <api-url> <token> [--harness claude,cursor,vscode,agents,codex|all] [--write-global]"
-        );
+      const parsed = parseInitArgs(args);
+      if (!parsed.ok) {
+        console.error(parsed.error);
         process.exit(2);
       }
+      const { apiUrl, token, harnesses: harnessSel, writeGlobal } = parsed.args;
       mkdirSync(join(process.cwd(), ".argus", "flows"), { recursive: true });
       writeFileSync(
         join(process.cwd(), ".argus", "config.json"),
@@ -1073,8 +1068,8 @@ usage:
   argus preset cf-saas <url>   generate the baseline flow suite for a CF+React+better-auth app
   argus audit --update-baseline <url>   approve current look as the baseline
   argus init <api> <token>     wire this project to Argus — MCP server + verification
-                               steps for Claude Code, Cursor, VS Code, Codex, any
-                               AGENTS.md reader (--harness all, --write-global)
+                               steps for Claude Code, Cursor, VS Code, Gemini CLI,
+                               Codex, any AGENTS.md reader (--harness all, --write-global)
   argus onboard <api> <token>  one command from nothing to a verdict: wire every
                                harness, tunnel a local app, run smoke + all flows
                                (--url https://… | --local 5173)

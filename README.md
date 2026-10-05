@@ -164,6 +164,13 @@ command = "node"
 args = ["<repo>/packages/mcp/dist/index.js"]
 ```
 
+**Gemini CLI** — `.gemini/settings.json`, so it reads the same `AGENTS.md` as
+everyone else instead of a second `GEMINI.md`:
+
+```json
+{ "context": { "fileName": "AGENTS.md" } }
+```
+
 Tools:
 `argus_lease/release/sessions`, `argus_query`, `argus_act`, `argus_act_batch`,
 `argus_observe`, `argus_assert`, `argus_screenshot`, `argus_smoke`,
@@ -172,9 +179,10 @@ Tools:
 
 The server also returns this lifecycle as `instructions` on initialize, so any
 client that surfaces it needs no instruction file at all. Harnesses that read
-`AGENTS.md` (Codex, Cursor, Copilot, Gemini CLI, Zed, Cline, Windsurf) pick up the
-standing verification steps `argus init` writes. The full matrix is in
-[docs/harness-support.md](docs/harness-support.md).
+`AGENTS.md` (Codex, Cursor, Copilot, Zed, Amp, opencode, Windsurf, Aider — see
+[agents.md](https://agents.md)) pick up the standing verification steps
+`argus init` writes; Gemini CLI joins them through the setting above. The full
+matrix is in [docs/harness-support.md](docs/harness-support.md).
 
 Reticle v1 flows can be imported through the MCP tool, including canonical
 testid/role anchors and network, console, element, and state expectations. See

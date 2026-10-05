@@ -15,16 +15,28 @@ URL, no checkout; flows live server-side per tenant), and a **local stdio** serv
 | Claude Code | `.mcp.json` (project) | `mcpServers` | `CLAUDE.md` | always |
 | Cursor | `.cursor/mcp.json` | `mcpServers` | `.cursor/rules/argus.mdc` | when `.cursor/` exists, or `--harness all` |
 | VS Code / Copilot | `.vscode/mcp.json` | `servers` + `type: stdio` | `.github/copilot-instructions.md` | when `.vscode/` exists, or `--harness all` |
+| Gemini CLI | `.gemini/settings.json` | `context.fileName` | `AGENTS.md` (shared) | when `.gemini/` exists, or `--harness all` |
 | Codex CLI | `~/.codex/config.toml` (global) | TOML `[mcp_servers.argus]` | `AGENTS.md` | snippet printed; written with `--write-global` |
-| Any `AGENTS.md` reader (Codex, Cursor, Copilot, Gemini CLI, Zed, Amp, Cline, Windsurf) | — | — | `AGENTS.md` | always |
+| Any other `AGENTS.md` reader | — | — | `AGENTS.md` | always |
 | Remote MCP clients | provider-specific | `url` / `type: http` | — | this is the canonical deployment shape |
 
-`argus init <api-url> <token> [--harness claude,cursor,vscode,agents,codex|all] [--write-global]`
+`AGENTS.md` is the only instruction file with more than one consumer: Codex,
+Cursor, Copilot, Zed, Amp, opencode, Windsurf, Aider and others read it natively
+(the current list is maintained at [agents.md](https://agents.md)). Gemini CLI
+reads `GEMINI.md` by default and joins in once `context.fileName` points at
+`AGENTS.md` — the `gemini` target does that for you, and never overwrites a value
+the project already set.
 
-- Default: `claude` + `agents`, plus `cursor`/`vscode` when their dirs exist.
+`argus init <api-url> <token> [--harness claude,cursor,vscode,gemini,agents,codex|all] [--write-global]`
+
+- Default: `claude` + `agents`, plus `cursor`/`vscode`/`gemini` when their dirs
+  exist.
 - `--harness all`: every harness above.
 - All writers are idempotent and merge into existing files — a second run is a
-  no-op and unrelated keys are preserved.
+  no-op, unrelated keys are preserved, and wiring that points at a moved
+  checkout is refreshed.
+- A config Argus can't safely edit (JSONC, or a group that isn't an object) is
+  left alone and the snippet for it is printed instead.
 - Global configs (Codex `~/.codex/config.toml`) are only touched with
   `--write-global`; otherwise the ready snippet is printed.
 
@@ -51,6 +63,13 @@ Codex CLI `~/.codex/config.toml`:
 [mcp_servers.argus]
 command = "node"
 args = ["<repo>/packages/mcp/dist/index.js"]
+```
+
+Gemini CLI `.gemini/settings.json` — no MCP entry is involved; this is what makes
+it read the same `AGENTS.md` as everyone else:
+
+```json
+{ "context": { "fileName": "AGENTS.md" } }
 ```
 
 **Remote (streamable-http) server** — used by hosted servers like agentprofile
