@@ -147,9 +147,14 @@ WEAKEST evidence tier it rests on; never upgrade it. Release every session.`,
   tool(
     "argus_act",
     "Perform one action (goto/click/fill/select/press/hover/scroll/back/reload/wait) and report the observed effects. Does NOT produce a verdict.",
-    { sessionId: z.string(), action: ActionSchema, ref: z.string().optional(), anchor: AnchorSchema.optional() },
-    async ({ sessionId, ...body }) =>
-      jsonResult(await call(`/v1/session/${sessionId}/act`, { method: "POST", body: JSON.stringify(body) }))
+    {
+      sessionId: z.string(),
+      step: ActionSchema.describe(
+        'the action object itself, e.g. {"action":"click","ref":"e5"} or {"action":"goto","url":"https://..."}'
+      ),
+    },
+    async ({ sessionId, step }) =>
+      jsonResult(await call(`/v1/session/${sessionId}/act`, { method: "POST", body: JSON.stringify(step) }))
   );
 
   tool(
@@ -157,9 +162,7 @@ WEAKEST evidence tier it rests on; never upgrade it. Release every session.`,
     "Run up to 50 ordered actions in one call; per-step effects, stops on the first failure by default.",
     {
       sessionId: z.string(),
-      steps: z.array(
-        z.object({ action: ActionSchema, anchor: AnchorSchema.optional(), ref: z.string().optional() })
-      ).min(1).max(50),
+      steps: z.array(ActionSchema).min(1).max(50),
       stopOnError: z.boolean().optional(),
     },
     async ({ sessionId, ...body }) =>
@@ -237,6 +240,10 @@ WEAKEST evidence tier it rests on; never upgrade it. Release every session.`,
       colorSchemes: z.array(z.enum(["light", "dark"])).optional(),
       checks: z.array(z.enum(["a11y", "perf", "links", "visual"])).optional(),
       updateBaseline: z.boolean().optional(),
+      authProfile: z
+        .string()
+        .optional()
+        .describe("audit behind the login wall using a saved auth profile"),
       project: z.string().max(60).optional(),
     },
     async (args) => jsonResult(await call("/v1/audit", { method: "POST", body: JSON.stringify(args) }))
@@ -269,7 +276,7 @@ WEAKEST evidence tier it rests on; never upgrade it. Release every session.`,
     "argus_flow_save",
     "Save a deterministic flow for this tenant (server-side). Provide the steps (usually from argus_record stop, with per-step expect predicates) and success predicates — prefer network/route consequences over DOM presence.",
     {
-      name: z.string(),
+      name: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/),
       startUrl: z.string().url(),
       steps: z.array(
         z.object({ action: ActionSchema, anchor: AnchorSchema.optional(), expect: z.array(PredicateSchema).optional(), label: z.string().optional() })

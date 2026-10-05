@@ -274,6 +274,7 @@ registerTool(
     url: z.string().url(),
     viewports: z.array(ViewportNameSchema).optional(),
     colorSchemes: z.array(z.enum(["light", "dark"])).optional(),
+    project: z.string().max(60).optional(),
   },
   async (args) => jsonResult(await api("POST", "/v1/smoke", args))
 );
@@ -305,7 +306,7 @@ registerTool(
       .string()
       .optional()
       .describe("audit behind the login wall using a saved auth profile"),
-    project: z.string().optional(),
+    project: z.string().max(60).optional(),
   },
   async (args) => jsonResult(await api("POST", "/v1/audit", args))
 );
@@ -588,7 +589,7 @@ registerTool(
       .url()
       .optional()
       .describe("re-home the suite onto this origin (deploy gating)"),
-    project: z.string().optional().describe("tag the run so the dashboard groups it per app"),
+    project: z.string().max(60).optional().describe("tag the run so the dashboard groups it per app"),
   },
   async ({ names, concurrency, baseUrl, project }) => {
     const flows = loadFlows(names);
