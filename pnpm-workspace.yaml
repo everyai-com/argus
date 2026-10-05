@@ -7,9 +7,3 @@ allowBuilds:
 minimumReleaseAgeExclude:
   - miniflare@5.20261001.0-alpha
   - wrangler@4.147.0
-# Security overrides for transitive deps (all via @modelcontextprotocol/sdk).
-# Re-check on every MCP SDK bump; drop when the locked versions already satisfy.
-overrides:
-  fast-uri: ^3.1.8
-  ip-address: ^10.7.1
-  qs: ^6.16.0
