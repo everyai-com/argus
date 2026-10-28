@@ -6,6 +6,7 @@ import {
   codexSnippet,
   parseInitArgs,
   resolveHarnesses,
+  splitCredentials,
   VERIFICATION_MARKER,
   wireHarnesses,
 } from "./harness";
@@ -198,15 +199,76 @@ describe("parseInitArgs", () => {
 
   it("reports usage instead of dropping a positional", () => {
     for (const argv of [
-      ["https://argus.example"],
       ["https://argus.example", "tok", "extra"],
       ["https://argus.example", "tok", "--harness"],
       ["https://argus.example", "tok", "--harness", "bogus"],
       ["https://argus.example", "tok", "--nope"],
+      ["--token"],
+      ["--api"],
     ]) {
       const parsed = parseInitArgs(argv);
       expect(parsed.ok, argv.join(" ")).toBe(false);
       if (!parsed.ok) expect(parsed.error).toMatch(/usage|needs a value|unknown harness|unknown flag/);
     }
+  });
+
+  it("accepts bare init with the hosted API default and no token yet", () => {
+    expect(parseInitArgs([])).toEqual({
+      ok: true,
+      args: {
+        apiUrl: "https://argus-cloud.everyai-com.workers.dev",
+        token: undefined,
+        harnesses: undefined,
+        writeGlobal: false,
+      },
+    });
+  });
+
+  it("treats one positional as a URL or a token by shape", () => {
+    expect(parseInitArgs(["https://argus.example"])).toEqual({
+      ok: true,
+      args: {
+        apiUrl: "https://argus.example",
+        token: undefined,
+        harnesses: undefined,
+        writeGlobal: false,
+      },
+    });
+    expect(parseInitArgs(["tok-only"])).toEqual({
+      ok: true,
+      args: {
+        apiUrl: "https://argus-cloud.everyai-com.workers.dev",
+        token: "tok-only",
+        harnesses: undefined,
+        writeGlobal: false,
+      },
+    });
+  });
+
+  it("accepts --api and --token flags anywhere", () => {
+    expect(parseInitArgs(["--token", "flag-tok", "--harness", "cursor"])).toEqual({
+      ok: true,
+      args: {
+        apiUrl: "https://argus-cloud.everyai-com.workers.dev",
+        token: "flag-tok",
+        harnesses: "cursor",
+        writeGlobal: false,
+      },
+    });
+    expect(parseInitArgs(["--api", "https://argus.example", "pos-tok"])).toEqual({
+      ok: true,
+      args: { apiUrl: "https://argus.example", token: "pos-tok", harnesses: undefined, writeGlobal: false },
+    });
+  });
+});
+
+describe("splitCredentials", () => {
+  it("keeps the classic api+token form and rejects a third positional", () => {
+    expect(splitCredentials(["https://a.example", "t"], {})).toEqual({
+      ok: true,
+      apiUrl: "https://a.example",
+      token: "t",
+    });
+    expect(splitCredentials(["a", "b", "c"], {}).ok).toBe(false);
   });
 });

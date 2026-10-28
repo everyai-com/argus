@@ -34,6 +34,10 @@ async function request(method, path, body) {
 
 const addTask = JSON.parse(readFileSync(join(root, ".argus", "flows", "add-task.json"), "utf8"));
 
+/** A deterministic bug must fail the same way twice — and leave a repro. */
+const confirmed = (r) =>
+  r.results?.[0]?.confirmation?.state === "confirmed" && /^repro-/.test(r.results?.[0]?.reproFlow ?? "");
+
 /** Each mode: how to probe it, and the signature its failure must carry. */
 const modes = [
   {
@@ -64,7 +68,7 @@ const modes = [
     // slowreq delays the task list behind setTimeout, but the static hero text
     // paints immediately — so LCP can't see it. The add-task flow catches it
     // instead, with timing-dependent evidence: "Loading…" (checked before the
-    // 8s load lands) or "1"/"2 task(s)". ("2" exposes a real demo race: the
+    // 8s load lands) or "1 task"/"2 tasks". ("2" exposes a real demo race: the
     // late initial-load write clobbers the just-added task. Never "3".)
     bug: "slowreq",
     probe: () =>
@@ -72,11 +76,13 @@ const modes = [
         flows: [{ ...addTask, startUrl: `${demo}/?bug=slowreq` }],
         project: "dogfood-matrix",
       }),
+    // A timing race: the re-run may fail the same way (confirmed) or differently
+    // (flaky) — either way it must never pass, and the evidence must show it.
     caught: (r) =>
       r.status !== "pass" &&
-      r.failed === 1 &&
-      /text is \\"(Loading…|1 task\(s\)|2 task\(s\))\\"/.test(JSON.stringify(r.results)),
-    want: "flow fails with count stuck at Loading/1/2 (never the expected 3)",
+      r.failed + (r.flaky ?? 0) === 1 &&
+      /text is \\"(Loading…|1 task|2 tasks)\\"/.test(JSON.stringify(r.results)),
+    want: "flow fails (confirmed or flaky) with count stuck at Loading/1/2 (never the expected 3)",
   },
   {
     bug: "silent500",
@@ -85,7 +91,7 @@ const modes = [
         flows: [{ ...addTask, startUrl: `${demo}/?bug=silent500` }],
         project: "dogfood-matrix",
       }),
-    caught: (r) => r.status !== "pass" && r.failed === 1 && JSON.stringify(r.results).includes("201"),
+    caught: (r) => r.status === "fail" && r.failed === 1 && confirmed(r) && JSON.stringify(r.results).includes("201"),
     want: "flow fails on the unmet POST-201 expectation",
   },
   {
@@ -95,7 +101,7 @@ const modes = [
         flows: [{ ...addTask, startUrl: `${demo}/?bug=deadbutton` }],
         project: "dogfood-matrix",
       }),
-    caught: (r) => r.status !== "pass" && r.failed === 1 && JSON.stringify(r.results).includes("no request"),
+    caught: (r) => r.status === "fail" && r.failed === 1 && confirmed(r) && JSON.stringify(r.results).includes("no request"),
     want: "flow fails: dead button makes no POST at all",
   },
   {
@@ -105,10 +111,49 @@ const modes = [
         flows: [{ ...addTask, startUrl: `${demo}/?bug=wrongstate` }],
         project: "dogfood-matrix",
       }),
-    caught: (r) => r.status !== "pass" && r.failed === 1 && JSON.stringify(r.results).includes("42"),
+    caught: (r) => r.status === "fail" && r.failed === 1 && confirmed(r) && JSON.stringify(r.results).includes("42"),
     want: "flow fails showing the hardcoded 42",
   },
+  {
+    // The add works on screen and the POST is a 201 — only a reload shows the
+    // task was never kept. add-task's `persists: "success"` is what catches it.
+    bug: "nopersist",
+    probe: () =>
+      request("POST", "/v1/flows/verify", {
+        flows: [{ ...addTask, startUrl: `${demo}/?bug=nopersist` }],
+        project: "dogfood-matrix",
+      }),
+    caught: (r) => r.status === "fail" && r.failed === 1 && confirmed(r) && JSON.stringify(r.results).includes("not_persisted"),
+    want: "flow fails with not_persisted after the reload",
+  },
 ];
+
+// Positive control: the same probes against the clean demo MUST pass — a
+// checker that fails everything would otherwise "catch" every bug above.
+modes.push(
+  {
+    bug: "none (smoke)",
+    probe: () =>
+      request("POST", "/v1/smoke", {
+        url: `${demo}/`,
+        viewports: ["desktop"],
+        colorSchemes: ["light"],
+        project: "dogfood-matrix",
+      }),
+    caught: (r) => r.status === "pass",
+    want: "clean demo smoke passes",
+  },
+  {
+    bug: "none (flow)",
+    probe: () =>
+      request("POST", "/v1/flows/verify", {
+        flows: [{ ...addTask, startUrl: `${demo}/` }],
+        project: "dogfood-matrix",
+      }),
+    caught: (r) => r.status === "pass" && r.passed === 1,
+    want: "clean demo add-task flow passes",
+  }
+);
 
 const settled = await Promise.allSettled(modes.map((m) => m.probe()));
 let failures = 0;
@@ -120,7 +165,7 @@ settled.forEach((s, i) => {
     return;
   }
   if (mode.caught(s.value)) {
-    console.log(`CAUGHT ?bug=${mode.bug}: ${mode.want}`);
+    console.log(`${mode.bug.startsWith("none") ? "PASSED" : "CAUGHT"} ?bug=${mode.bug}: ${mode.want}`);
   } else {
     failures++;
     console.log(

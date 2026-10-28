@@ -11,10 +11,9 @@
  * collecting proposals. Proposals only become real when the client applies
  * them to the flow file (which lives in the repo, not here).
  */
-import { acquirePooledBrowser, releasePooledBrowser } from "./pool";
+import { acquirePooledBrowser, FleetBusyError, releasePooledBrowser } from "./pool";
 import type { Page, Locator } from "@cloudflare/playwright";
 import {
-  VIEWPORTS,
   type ConsoleEvent,
   type Flow,
   type FlowReplayResult,
@@ -22,11 +21,14 @@ import {
   type Predicate,
   type PredicateResult,
   type StreamEvent,
+  type SuiteStatus,
+  type NetworkProfile,
 } from "@argus/shared";
 import { evalPredicate, nearestMatch, resolveAnchor, weakestTier } from "./verify";
 import { triageFlowFailure } from "./judge";
 import { hostOf, loadAuthProfile, saveAuthProfile } from "./auth-store";
-import { rehomeFlow } from "./flow-utils";
+import { applyNetwork, applyViewport, contextOptionsFor, persistPredicates, rehomeFlow, settleBudget, trackInflight, waitForQuiet } from "./flow-utils";
+import { putFlow } from "./flows-store";
 import type { Env } from "./env";
 
 export { rehomeFlow } from "./flow-utils";
@@ -243,7 +245,8 @@ export async function replayFlow(
   const proposals: HealProposal[] = [];
   const stepResults: Array<{ step: number; ok: boolean; note?: string }> = [];
 
-  const browser = await acquirePooledBrowser(env);
+  const pooled = await acquirePooledBrowser(env, owner, `flow:${flow.name}`);
+  const browser = pooled.browser;
   try {
     // Behind-the-login-wall flows start from a saved session rather than
     // re-driving the login form on every replay.
@@ -269,15 +272,17 @@ export async function replayFlow(
     }
 
     const context = await browser.newContext({
-      viewport: VIEWPORTS[flow.viewport],
+      ...contextOptionsFor(flow.viewport, browser.version()),
       ...(storageState ? { storageState: storageState as never } : {}),
     });
     const page = await context.newPage();
     const buf = bindBuffers(page);
+    trackInflight(page);
 
     await page.goto(flow.startUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
     await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => {});
 
+    let network: NetworkProfile = "none"; // a recorded throttle is replayed as a step
     for (let i = 0; i < flow.steps.length; i++) {
       const step = flow.steps[i]!;
       const seqBefore = buf.seq;
@@ -299,7 +304,7 @@ export async function replayFlow(
             decision: ambiguityDecision(i, from, via, matched, await describeCandidates(found, matched)),
             durationMs: Date.now() - t0,
             screenshotKey: key,
-            stepResults,
+            stepResults: failStep(stepResults, i, "ambiguous anchor"),
           }, { buf, judge: opts.judge });
         }
         if (matched === 0) {
@@ -326,7 +331,7 @@ export async function replayFlow(
               durationMs: Date.now() - t0,
               screenshotKey: key,
               proposals: proposals.length ? proposals : undefined,
-              stepResults,
+              stepResults: failStep(stepResults, i, "ambiguous heal target"),
             }, { buf, judge: opts.judge });
           } else {
             const key = await finalShot(env, owner, page, flow.name);
@@ -349,7 +354,7 @@ export async function replayFlow(
               durationMs: Date.now() - t0,
               screenshotKey: key,
               proposals: proposals.length ? proposals : undefined,
-              stepResults,
+              stepResults: failStep(stepResults, i, "anchor not found"),
             }, { buf, judge: opts.judge });
           }
         } else {
@@ -362,6 +367,7 @@ export async function replayFlow(
 
       // Perform the action.
       const a = step.action;
+      const stepStart = Date.now();
       try {
         switch (a.action) {
           case "goto":
@@ -376,11 +382,18 @@ export async function replayFlow(
           case "wait":
             await page.waitForTimeout(a.ms);
             break;
+          case "viewport":
+            await applyViewport(page, a);
+            break;
+          case "network":
+            await applyNetwork(page, a.profile);
+            network = a.profile;
+            break;
           case "scroll":
             await page.mouse.wheel(0, a.direction === "down" ? a.amount : -a.amount);
             break;
           case "click":
-            await requireLocator(locator, i).click({ timeout: 5_000 });
+            await requireLocator(locator, i).click({ timeout: 5_000, clickCount: a.clickCount });
             break;
           case "fill":
             await requireLocator(locator, i).fill(a.value, { timeout: 5_000 });
@@ -410,11 +423,11 @@ export async function replayFlow(
           },
           durationMs: Date.now() - t0,
           screenshotKey: key,
-          stepResults,
+          stepResults: failStep(stepResults, i, "action failed"),
         }, { buf, judge: opts.judge });
       }
 
-      await page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => {});
+      await waitForQuiet(page, stepStart, settleBudget(3_000, network));
 
       // Step expectations — scoped to this step's event window.
       if (step.expect.length > 0) {
@@ -436,7 +449,7 @@ export async function replayFlow(
             evidenceTier: weakestTier(results),
             durationMs: Date.now() - t0,
             screenshotKey: key,
-            stepResults,
+            stepResults: failStep(stepResults, i, "expectation failed"),
           }, { buf, judge: opts.judge });
         }
       }
@@ -463,6 +476,35 @@ export async function replayFlow(
         screenshotKey: key,
         stepResults,
       }, { buf, judge: opts.judge });
+    }
+
+    // Held on screen — does it survive a reload? An optimistic UI that never
+    // saved passes `success` and fails here (the bug a first-time user finds
+    // by coming back, and a per-step check never sees).
+    const persist = persistPredicates(flow);
+    if (persist.length > 0) {
+      const tReload = Date.now();
+      await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
+      await waitForQuiet(page, tReload, settleBudget(3_000, network));
+      const kept = await evalAllSettled(page, buf, persist);
+      const lost = kept.filter((r) => !r.pass);
+      if (lost.length > 0) {
+        return await withTriage(env, {
+          flow: flow.name,
+          status: "error",
+          stepsRun: flow.steps.length,
+          decision: {
+            verdict: "not_persisted",
+            whatChanged: `after a reload: ${lost.map((f) => f.evidence).join("; ")}`,
+            nextAction:
+              "the outcome showed on screen but did not survive a reload — it was never saved, or saved somewhere the page does not read back",
+          },
+          evidenceTier: weakestTier(kept),
+          durationMs: Date.now() - t0,
+          screenshotKey: await finalShot(env, owner, page, flow.name),
+          stepResults,
+        }, { buf, judge: opts.judge });
+      }
     }
 
     // A login flow only mints its auth profile once it actually succeeded —
@@ -493,8 +535,28 @@ export async function replayFlow(
       authSaved,
     };
   } finally {
-    await releasePooledBrowser(env, browser);
+    await releasePooledBrowser(env, pooled);
   }
+}
+
+/**
+ * Mark the step a replay stopped on as failed. Entries are pushed once the
+ * anchor resolves — before the action runs and its expectations are checked —
+ * so without this a verdict could say failedStep: 2 while step 2 read ok.
+ */
+function failStep(
+  stepResults: Array<{ step: number; ok: boolean; note?: string }>,
+  step: number,
+  note: string
+): Array<{ step: number; ok: boolean; note?: string }> {
+  const entry = stepResults.find((r) => r.step === step);
+  if (entry) {
+    entry.ok = false;
+    entry.note = entry.note ? `${entry.note}; ${note}` : note;
+  } else {
+    stepResults.push({ step, ok: false, note });
+  }
+  return stepResults;
 }
 
 function requireLocator(locator: Locator | undefined, step: number): Locator {
@@ -569,15 +631,22 @@ export async function verifyFlows(
   concurrency = 4,
   baseUrl?: string,
   tenantId = "_admin",
-  judge = true
+  judge = true,
+  opts: { confirm?: boolean; saveRepros?: boolean } = {}
 ): Promise<{
-  status: "pass" | "fail";
+  status: SuiteStatus;
   total: number;
   passed: number;
+  /** Failures confirmed by a second, agreeing replay (or unconfirmed when confirm is off). */
   failed: number;
+  /** Failed once, then disagreed on the re-run — not reliably tested; never fails a build. */
+  flaky: number;
+  /** Argus could not test these (no browser slot, missing auth profile, unreachable start). */
+  untested: number;
   summary: string;
   results: ReplayOutcome[];
 }> {
+  const confirm = opts.confirm ?? true;
   const flows = baseUrl ? inputFlows.map((f) => rehomeFlow(f, baseUrl)) : inputFlows;
   const results: ReplayOutcome[] = new Array(flows.length);
 
@@ -597,12 +666,21 @@ export async function verifyFlows(
               flow: flows[i]!.name,
               status: "error",
               stepsRun: 0,
-              decision: {
-                verdict: "error",
-                whatChanged: String(err).slice(0, 200),
-                nextAction:
-                  "replay crashed before the first step — check the start URL is reachable",
-              },
+              decision:
+                err instanceof FleetBusyError
+                  ? {
+                      // Not the app's fault — never let it read as a regression.
+                      verdict: "fleet_busy",
+                      whatChanged: `no browser slot: ${err.reason} — ${err.message}`.slice(0, 200),
+                      nextAction:
+                        "the app was not tested; re-run with lower concurrency, release idle sessions, or retry shortly",
+                    }
+                  : {
+                      verdict: "error",
+                      whatChanged: String(err).slice(0, 200),
+                      nextAction:
+                        "replay crashed before the first step — check the start URL is reachable",
+                    },
               durationMs: 0,
             };
           }
@@ -638,20 +716,128 @@ export async function verifyFlows(
     }
   }
 
+  // Only a repeated failure counts. Re-run each product failure once (no
+  // judge — code decides): agreement confirms it; disagreement makes it flaky,
+  // which is reported loudly but can never fail a build on its own.
+  const toConfirm = confirm
+    ? results.map((r, i) => ({ r, i })).filter(({ r }) => r.status !== "ok" && !isUntested(r))
+    : [];
+  if (toConfirm.length > 0) {
+    let next = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(concurrency, toConfirm.length) }, async () => {
+        for (;;) {
+          const item = toConfirm[next++];
+          if (!item) return;
+          const second = await replayFlow(env, flows[item.i]!, { tenantId, judge: false }).catch(
+            (err): ReplayOutcome => ({
+              flow: item.r.flow,
+              status: "error",
+              stepsRun: 0,
+              decision: { verdict: err instanceof FleetBusyError ? "fleet_busy" : "error", whatChanged: String(err).slice(0, 200), nextAction: "" },
+              durationMs: 0,
+            })
+          );
+          const agree = second.status !== "ok" && failureSignature(second) === failureSignature(item.r);
+          item.r.confirmation = {
+            state: agree ? "confirmed" : "flaky",
+            ...(agree
+              ? {}
+              : {
+                  second: {
+                    status: second.status,
+                    verdict: second.decision?.verdict,
+                    failedStep: second.failedStep,
+                    whatChanged: second.decision?.whatChanged,
+                  },
+                }),
+          };
+        }
+      })
+    );
+  }
+
+  // A confirmed failure leaves a named repro in the tenant's flow library, so
+  // any agent (or a GitHub issue) can replay exactly this failure by name.
+  if (opts.saveRepros !== false) {
+    for (const r of results) {
+      if (r.status === "ok" || isUntested(r) || r.confirmation?.state === "flaky") continue;
+      const flow = flows.find((f) => f.name === r.flow);
+      if (!flow) continue;
+      const name = await reproName(flow.name, r);
+      const step = r.failedStep;
+      const repro: Flow = {
+        ...flow,
+        name,
+        steps: flow.steps.map((st, idx) =>
+          idx === step ? { ...st, label: `REPRO: ${(r.decision?.whatChanged ?? "fails here").slice(0, 160)}` } : st
+        ),
+      };
+      try {
+        await putFlow(env, tenantId, repro);
+        r.reproFlow = name;
+        if (r.decision && !r.decision.action) {
+          r.decision.action = { tool: "argus_flow_replay", args: { name } };
+        }
+      } catch {
+        /* the repro is a convenience; the verdict stands without it */
+      }
+    }
+  }
+
   const passed = results.filter((r) => r.status === "ok").length;
-  const failed = results.length - passed;
-  const failures = results.filter((r) => r.status !== "ok");
+  const untestedList = results.filter((r) => r.status !== "ok" && isUntested(r));
+  const flakyList = results.filter((r) => r.status !== "ok" && !isUntested(r) && r.confirmation?.state === "flaky");
+  const failures = results.filter(
+    (r) => r.status !== "ok" && !isUntested(r) && r.confirmation?.state !== "flaky"
+  );
+  const status: SuiteStatus =
+    failures.length > 0 ? "fail" : flakyList.length > 0 ? "flaky" : untestedList.length > 0 ? "untested" : "pass";
+  const parts = [`${passed}/${results.length} flows pass`];
+  if (failures.length) parts.push(`${failures.length} failed: ${failures.map((f) => f.flow).join(", ")}`);
+  if (flakyList.length) parts.push(`${flakyList.length} flaky: ${flakyList.map((f) => f.flow).join(", ")}`);
+  if (untestedList.length) parts.push(`${untestedList.length} untested: ${untestedList.map((f) => f.flow).join(", ")}`);
   return {
-    status: failed === 0 ? "pass" : "fail",
+    status,
     total: results.length,
     passed,
-    failed,
-    summary:
-      failed === 0
-        ? `${passed}/${results.length} flows pass`
-        : `${passed}/${results.length} flows pass — ${failed} need attention: ${failures
-            .map((f) => f.flow)
-            .join(", ")}`,
+    failed: failures.length,
+    flaky: flakyList.length,
+    untested: untestedList.length,
+    summary: parts.join(" — "),
     results,
   };
+}
+
+/**
+ * Argus could not test this flow — the app is not at fault: no browser slot,
+ * a missing auth profile, or a crash before the first step ran.
+ */
+export function isUntested(r: ReplayOutcome): boolean {
+  const v = r.decision?.verdict;
+  return (
+    v === "fleet_busy" ||
+    v === "auth_profile_missing" ||
+    (v === "error" && r.stepsRun === 0 && r.failedStep === undefined)
+  );
+}
+
+/**
+ * Two replays agree when code reached the same result: same status, same
+ * verdict, same step, same evidence text. Screens are never compared.
+ */
+export function failureSignature(r: ReplayOutcome): string {
+  // Timestamps, ids and durations (4+ digits) differ run to run without the
+  // failure differing; small numbers ("2 task(s)" vs "3") are real evidence.
+  const evidence = (r.decision?.whatChanged ?? "").replace(/\d{4,}/g, "#");
+  return [r.status, r.decision?.verdict ?? "", r.failedStep ?? "", evidence].join("|");
+}
+
+async function reproName(flowName: string, r: ReplayOutcome): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(`${flowName}|${r.decision?.verdict}|${r.failedStep}|${r.decision?.whatChanged}`)
+  );
+  const hex = [...new Uint8Array(digest)].slice(0, 3).map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `repro-${flowName}`.slice(0, 80) + `-${hex}`;
 }

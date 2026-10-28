@@ -7,8 +7,19 @@
  * links are checked from the Worker (parallel, cheap). Everything lands as
  * findings with decision envelopes; the report persists to R2.
  */
+import { contextOptionsFor } from "./flow-utils";
 import { acquirePooledBrowser, releasePooledBrowser } from "./pool";
-import type { Page } from "@cloudflare/playwright";
+import type { Browser } from "@cloudflare/playwright";
+import { detectorFindings, probeLayout } from "./detectors";
+import {
+  blockNoise,
+  freezeScript,
+  HOLLOW_MASK_SHARE,
+  maskedShare,
+  STABILITY_CSS,
+  waitForStableFrame,
+} from "./stability";
+import { applyTriage } from "./triage";
 // @ts-expect-error — upng-js ships no types; pure-JS PNG codec that runs in workerd
 import UPNG from "upng-js";
 import pixelmatch from "pixelmatch";
@@ -115,6 +126,9 @@ export async function runAudit(env: Env, req: AuditRequest, tenantId?: string): 
 
   const axeSource = req.checks.includes("a11y") ? await getAxeSource(env) : undefined;
   const seenA11yIds = new Set<string>();
+  const layoutDone = new Set<ViewportName>();
+  // One instant for every capture in this run, so all viewports agree.
+  const clockAt = req.freezeClock ? Date.parse(req.freezeClock) : Date.now();
   let pageLinks: string[] = [];
   let linkResults: Array<{ link: string; status: number }> | undefined;
 
@@ -130,12 +144,13 @@ export async function runAudit(env: Env, req: AuditRequest, tenantId?: string): 
     storageState = profile.state;
   }
 
-  const browser = await acquirePooledBrowser(env);
+  const pooled = await acquirePooledBrowser(env, owner, "audit");
+  const browser = pooled.browser;
   try {
     for (const viewport of req.viewports) {
       for (const colorScheme of req.colorSchemes) {
         const context = await browser.newContext({
-          viewport: VIEWPORTS[viewport],
+          ...contextOptionsFor(viewport, browser.version()),
           colorScheme,
           ...(storageState ? { storageState: storageState as never } : {}),
         });
@@ -286,20 +301,66 @@ export async function runAudit(env: Env, req: AuditRequest, tenantId?: string): 
           });
         }
 
-        // ---- screenshot + visual diff ------------------------------------
+        // ---- layout & content detectors (once per viewport) ---------------
+        if (req.checks.includes("layout") && !layoutDone.has(viewport)) {
+          layoutDone.add(viewport);
+          const hits = await probeLayout(page, { tapTargets: viewport === "mobile" });
+          findings.push(...detectorFindings(hits, viewport, fid));
+        }
+
+        // ---- screenshot (evidence) + visual diff (stable capture) ---------
         const png = await page.screenshot({ fullPage: false, type: "png" });
         const currentKey = `tenants/${owner}/runs/${runId}/audit-${viewport}-${colorScheme}.png`;
         await env.ARTIFACTS.put(currentKey, png, { httpMetadata: { contentType: "image/png" } });
         screenshots.push({ viewport, colorScheme, key: currentKey, url: `/v1/artifact/${currentKey}` });
 
         if (req.checks.includes("visual")) {
-          const blKey = `tenants/${owner}/baselines/${baseKey}/${viewport}-${colorScheme}.png`;
-          const baseline = await env.ARTIFACTS.get(blKey);
-          if (!baseline) {
-            await env.ARTIFACTS.put(blKey, png, { httpMetadata: { contentType: "image/png" } });
-            visual.push({ viewport, colorScheme, status: "baseline-created", currentKey, baselineKey: blKey });
+          // Compared frames come from a pinned capture, never the live load:
+          // frozen clock, seeded randomness, no motion, no third-party noise,
+          // two identical frames. v2 baselines are stable-capture baselines.
+          const stable = await captureStable(browser, req, viewport, colorScheme, storageState, clockAt);
+          const blKey = `tenants/${owner}/baselines/v2/${baseKey}/${viewport}-${colorScheme}.png`;
+          const capture = {
+            maskedPct: stable.maskedPct || undefined,
+            blockedRequests: stable.blocked || undefined,
+            stableAfterFrames: stable.frames || undefined,
+          };
+          if (stable.maskedPct > HOLLOW_MASK_SHARE) {
+            findings.push({
+              id: fid(),
+              severity: "minor",
+              category: "visual",
+              rule: "visual/hollow",
+              summary: `Hollow visual test at ${viewport}/${colorScheme}: ${(stable.maskedPct * 100).toFixed(0)}% of the screen is masked`,
+              evidence: { viewport },
+              decision: {
+                whatChanged: "most of the screen is excluded from the visual compare, so a pass here proves little",
+                nextAction: "narrow the masks to the genuinely volatile elements (avatars, timestamps, counters)",
+              },
+            });
+          }
+          const stablePng = stable.png;
+          const baseline = stablePng ? await env.ARTIFACTS.get(blKey) : null;
+          if (!stablePng) {
+            visual.push({ viewport, colorScheme, status: "unstable", currentKey, baselineKey: blKey, ...capture });
+            findings.push({
+              id: fid(),
+              severity: "info",
+              category: "visual",
+              rule: "visual/unstable",
+              summary: `Visual compare skipped at ${viewport}/${colorScheme}: the screen never settled`,
+              detail: stable.error,
+              evidence: { viewport },
+              decision: {
+                whatChanged: "no two consecutive frames were identical within 8s (an animation, video or live data keeps repainting) — not compared, not a regression",
+                nextAction: "mask the element that keeps changing (audit masks), or stop it under prefers-reduced-motion",
+              },
+            });
+          } else if (!baseline) {
+            await env.ARTIFACTS.put(blKey, stablePng, { httpMetadata: { contentType: "image/png" } });
+            visual.push({ viewport, colorScheme, status: "baseline-created", currentKey, baselineKey: blKey, ...capture });
           } else {
-            const currentBuf = png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength);
+            const currentBuf = stablePng.buffer.slice(stablePng.byteOffset, stablePng.byteOffset + stablePng.byteLength);
             const curImg = UPNG.decode(currentBuf);
             const baseBuf = await baseline.arrayBuffer();
             const baseImg = UPNG.decode(baseBuf);
@@ -327,13 +388,17 @@ export async function runAudit(env: Env, req: AuditRequest, tenantId?: string): 
                   currentKey,
                   baselineKey: blKey,
                   diffKey,
+                  ...capture,
                 };
                 visual.push(entry);
                 const finding: Finding = {
                   id: fid(),
                   severity: ratio > 0.05 ? "major" : "minor",
                   category: "visual",
-                  summary: `Visual change at ${viewport}/${colorScheme}: ${(ratio * 100).toFixed(1)}% of pixels differ from baseline`,
+                  rule: "visual/diff",
+                  summary: `Visual change at ${viewport}/${colorScheme}: ${(ratio * 100).toFixed(1)}% of pixels differ from baseline${
+                    stable.maskedPct ? ` (${(stable.maskedPct * 100).toFixed(0)}% masked)` : ""
+                  }`,
                   evidence: { screenshotKey: currentKey, viewport },
                   decision: {
                     whatChanged: "the rendered page no longer matches the approved baseline",
@@ -351,11 +416,11 @@ export async function runAudit(env: Env, req: AuditRequest, tenantId?: string): 
                   });
                 }
               } else {
-                visual.push({ viewport, colorScheme, status: "match", diffRatio: 0, currentKey, baselineKey: blKey });
+                visual.push({ viewport, colorScheme, status: "match", diffRatio: 0, currentKey, baselineKey: blKey, ...capture });
               }
             }
             if (req.updateBaseline) {
-              await env.ARTIFACTS.put(blKey, png, { httpMetadata: { contentType: "image/png" } });
+              await env.ARTIFACTS.put(blKey, stablePng, { httpMetadata: { contentType: "image/png" } });
             }
           }
         }
@@ -436,11 +501,14 @@ export async function runAudit(env: Env, req: AuditRequest, tenantId?: string): 
           }
         }
 
-        await context.close();
+        // The audit is already measured; a context the browser lost on teardown
+        // must not throw it away (nightly live E2E, 2026-10-13: "audit_failed:
+        // browserContext.close: Target page, context or browser has been closed").
+        await context.close().catch(() => {});
       }
     }
   } finally {
-    await releasePooledBrowser(env, browser);
+    await releasePooledBrowser(env, pooled);
   }
 
   // ---- vision judge (browser already released; every call in parallel) ---
@@ -477,7 +545,17 @@ export async function runAudit(env: Env, req: AuditRequest, tenantId?: string): 
     }
   }
 
-  const hasBlockers = findings.some((f) => f.severity === "critical" || f.severity === "major");
+  // ---- triage memory: identity, dismissals, regressions ------------------
+  const ran = new Set(["console", "network", "load", "responsive"]);
+  if (axeSource) ran.add("a11y");
+  for (const c of ["perf", "visual", "layout"] as const) if (req.checks.includes(c)) ran.add(c);
+  if (req.checks.includes("layout")) ran.add("content");
+  if (req.checks.includes("links")) ran.add("link");
+  const triaged = loaded
+    ? await applyTriage(env, owner, findings, { pageUrl: req.url, ranFamilies: ran, viewports: req.viewports })
+    : { findings, suppressed: [], newFindings: 0, regressions: 0 };
+
+  const hasBlockers = triaged.findings.some((f) => f.severity === "critical" || f.severity === "major");
   const report: AuditReport = {
     runId,
     url: req.url,
@@ -496,7 +574,10 @@ export async function runAudit(env: Env, req: AuditRequest, tenantId?: string): 
     linksChecked,
     brokenLinks,
     screenshots,
-    findings,
+    findings: triaged.findings,
+    newFindings: triaged.newFindings,
+    regressions: triaged.regressions,
+    suppressed: triaged.suppressed,
   };
 
   await env.ARTIFACTS.put(`tenants/${owner}/runs/${runId}/audit-report.json`, JSON.stringify(report, null, 2), {
@@ -511,10 +592,52 @@ export async function runAudit(env: Env, req: AuditRequest, tenantId?: string): 
     status: report.status,
     at: startedAt,
     durationMs: report.durationMs,
-    findings: findings.length,
+    findings: triaged.findings.length,
   });
 
   return report;
+}
+
+/**
+ * The frame a visual diff compares: its own context with the clock frozen,
+ * randomness seeded, motion off, third-party noise blocked and masks painted,
+ * captured only once two consecutive frames are byte-identical.
+ */
+async function captureStable(
+  browser: Browser,
+  req: AuditRequest,
+  viewport: ViewportName,
+  colorScheme: "light" | "dark",
+  storageState: unknown,
+  clockAt: number
+): Promise<{ png?: Uint8Array; frames: number; blocked: number; maskedPct: number; error?: string }> {
+  const context = await browser.newContext({
+    ...contextOptionsFor(viewport, browser.version()),
+    colorScheme,
+    reducedMotion: "reduce",
+    ...(storageState ? { storageState: storageState as never } : {}),
+  });
+  try {
+    await context.addInitScript(freezeScript(clockAt));
+    const noise = await blockNoise(context);
+    const page = await context.newPage();
+    await page.goto(req.url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForLoadState("networkidle", { timeout: 6_000 }).catch(() => {});
+    await page.addStyleTag({ content: STABILITY_CSS }).catch(() => {});
+    const masks = req.masks ?? [];
+    const maskedPct = await maskedShare(page, masks);
+    const frame = await waitForStableFrame(page, { mask: masks });
+    return {
+      png: frame?.png,
+      frames: frame?.frames ?? 0,
+      blocked: noise.count(),
+      maskedPct: Math.round(maskedPct * 1000) / 1000,
+    };
+  } catch (err) {
+    return { frames: 0, blocked: 0, maskedPct: 0, error: String(err).slice(0, 300) };
+  } finally {
+    await context.close().catch(() => {});
+  }
 }
 
 interface PendingAdjudication {

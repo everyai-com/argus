@@ -1,0 +1,205 @@
+{
+  "version": 1,
+  "id": "screen-capacity",
+  "description": "Fleet saturation gauges, launch queue stats, and per-tenant reserved floor table.",
+  "platform": "web",
+  "requires": [
+    "screen-fleet"
+  ],
+  "steps": [
+    {
+      "kind": "type",
+      "target": {
+        "role": "textbox",
+        "name": "Email",
+        "text": "",
+        "selector": "#acct-email",
+        "point": {
+          "x": 466,
+          "y": 356.390625
+        }
+      },
+      "value": "notanemail",
+      "submit": false,
+      "at": "https://argus-cloud.everyai-com.workers.dev/?tab=account|Argus — browser verification console|e88a14a8a43b"
+    },
+    {
+      "kind": "type",
+      "target": {
+        "role": "textbox",
+        "name": "Password",
+        "text": "",
+        "selector": "#acct-pass",
+        "point": {
+          "x": 466,
+          "y": 424.890625
+        }
+      },
+      "value": "short",
+      "submit": false,
+      "at": "https://argus-cloud.everyai-com.workers.dev/?tab=account|Argus — browser verification console|e88a14a8a43b"
+    },
+    {
+      "kind": "tap",
+      "target": {
+        "role": "button",
+        "name": "Fleet 2",
+        "text": "Fleet 2",
+        "selector": "div:nth-of-type(1) > button:nth-of-type(1)",
+        "point": {
+          "x": 115.5,
+          "y": 119.625
+        }
+      },
+      "at": "https://argus-cloud.everyai-com.workers.dev/|Argus — browser verification console|f835f40c8afe"
+    },
+    {
+      "kind": "tap",
+      "target": {
+        "role": "link",
+        "name": "demo-buggy — open latest run",
+        "text": "FAIL audit demo-buggy 1 of 1 failing · 12m ago",
+        "selector": "div:nth-of-type(2) > a:nth-of-type(2)",
+        "point": {
+          "x": 604.1953125,
+          "y": 303.265625
+        }
+      },
+      "at": "https://argus-cloud.everyai-com.workers.dev/?run=7a9f0448|Argus — browser verification console|2c0ab88c3196"
+    },
+    {
+      "kind": "tap",
+      "target": {
+        "role": "button",
+        "name": "copy fix prompt",
+        "text": "copy fix prompt",
+        "selector": "div:nth-of-type(2) > div > div:nth-of-type(1) > button",
+        "point": {
+          "x": 728.8984375,
+          "y": 419.515625
+        }
+      },
+      "at": "https://argus-cloud.everyai-com.workers.dev/?run=7a9f0448|Argus — browser verification console|00cf995a98c0"
+    },
+    {
+      "kind": "tap",
+      "target": {
+        "role": "link",
+        "name": "Open desktop light full size",
+        "text": "",
+        "selector": "div:nth-of-type(2) > div > div > a",
+        "point": {
+          "x": 1001,
+          "y": 486.515625
+        }
+      },
+      "at": "https://argus-cloud.everyai-com.workers.dev/?run=7a9f0448|Argus — browser verification console|00cf995a98c0"
+    },
+    {
+      "kind": "window",
+      "match": "argus",
+      "at": "https://argus-cloud.everyai-com.workers.dev/?run=7a9f0448|Argus — browser verification console|00cf995a98c0"
+    },
+    {
+      "kind": "back",
+      "at": "https://argus-cloud.everyai-com.workers.dev/?tab=account|Argus — browser verification console|1e7cfe32cc2f"
+    },
+    {
+      "kind": "tap",
+      "target": {
+        "role": "button",
+        "name": "Runs 3",
+        "text": "Runs 3",
+        "selector": "div:nth-of-type(1) > button:nth-of-type(2)",
+        "point": {
+          "x": 115.5,
+          "y": 156.375
+        }
+      },
+      "at": "https://argus-cloud.everyai-com.workers.dev/?tab=runs|Argus — browser verification console|d1610127cf01"
+    },
+    {
+      "kind": "tap",
+      "target": {
+        "role": "link",
+        "name": "SMOKE 825e0cd8 13m ago",
+        "text": "SMOKE 825e0cd8 13m ago",
+        "selector": "a:nth-of-type(3)",
+        "point": {
+          "x": 836,
+          "y": 402.765625
+        }
+      },
+      "at": "https://argus-cloud.everyai-com.workers.dev/?tab=runs&run=825e0cd8|Argus — browser verification console|2c0ab88c3196"
+    },
+    {
+      "kind": "tap",
+      "target": {
+        "role": "button",
+        "name": "← Runs",
+        "text": "← Runs",
+        "selector": "div:nth-of-type(3) > div:nth-of-type(1) > button:nth-of-type(1)",
+        "point": {
+          "x": 291.734375,
+          "y": 231.265625
+        }
+      },
+      "at": "https://argus-cloud.everyai-com.workers.dev/?tab=runs|Argus — browser verification console|7b366bbb115e"
+    },
+    {
+      "kind": "tap",
+      "target": {
+        "role": "link",
+        "name": "FLOWS 92069727 13m ago",
+        "text": "FLOWS 92069727 13m ago",
+        "selector": "div:nth-of-type(3) > a:nth-of-type(1)",
+        "point": {
+          "x": 836,
+          "y": 321.765625
+        }
+      },
+      "at": "https://argus-cloud.everyai-com.workers.dev/?tab=runs&run=92069727|Argus — browser verification console|2c0ab88c3196"
+    },
+    {
+      "kind": "tap",
+      "target": {
+        "role": "button",
+        "name": "Sessions",
+        "text": "Sessions",
+        "selector": "button:nth-of-type(3)",
+        "point": {
+          "x": 115.5,
+          "y": 193.125
+        }
+      },
+      "at": "https://argus-cloud.everyai-com.workers.dev/?tab=sessions|Argus — browser verification console|a1e30c549f8c"
+    },
+    {
+      "kind": "tap",
+      "target": {
+        "role": "button",
+        "name": "Capacity",
+        "text": "Capacity",
+        "selector": "nav > div:nth-of-type(2) > button:nth-of-type(1)",
+        "point": {
+          "x": 115.5,
+          "y": 269.625
+        }
+      },
+      "at": "https://argus-cloud.everyai-com.workers.dev/?tab=capacity|Argus — browser verification console|1556d70ea313"
+    }
+  ],
+  "screenId": "capacity",
+  "expect": {
+    "elements": [
+      "Sessions",
+      "Capacity",
+      "GitHub",
+      "Account",
+      "API token",
+      "Clear token"
+    ]
+  },
+  "createdAt": "2026-10-14T09:02:11.991Z",
+  "updatedAt": "2026-10-14T09:02:11.991Z"
+}

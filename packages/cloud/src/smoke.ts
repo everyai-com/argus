@@ -5,6 +5,7 @@
  * console errors / failed requests / responsive overflow, screenshot to R2.
  * Deterministic, no model. Report JSON is also persisted to R2.
  */
+import { contextOptionsFor } from "./flow-utils";
 import { acquirePooledBrowser, releasePooledBrowser } from "./pool";
 import {
   VIEWPORTS,
@@ -13,6 +14,7 @@ import {
   type SmokeRequest,
 } from "@argus/shared";
 import { writeRunMeta } from "./runs";
+import { applyTriage } from "./triage";
 import type { Env } from "./env";
 
 export async function runSmoke(env: Env, req: SmokeRequest, tenantId?: string): Promise<SmokeReport> {
@@ -30,12 +32,13 @@ export async function runSmoke(env: Env, req: SmokeRequest, tenantId?: string): 
   let findingSeq = 0;
   const fid = () => `f-${runId}-${++findingSeq}`;
 
-  const browser = await acquirePooledBrowser(env);
+  const pooled = await acquirePooledBrowser(env, owner, "smoke");
+  const browser = pooled.browser;
   try {
     for (const viewport of req.viewports) {
       for (const colorScheme of req.colorSchemes) {
         const context = await browser.newContext({
-          viewport: VIEWPORTS[viewport],
+          ...contextOptionsFor(viewport, browser.version()),
           colorScheme,
         });
         const page = await context.newPage();
@@ -68,7 +71,7 @@ export async function runSmoke(env: Env, req: SmokeRequest, tenantId?: string): 
               nextAction: "check that the URL is reachable and the server responds — this blocks all other checks",
             },
           });
-          await context.close();
+          await context.close().catch(() => {});
           continue;
         }
 
@@ -130,17 +133,25 @@ export async function runSmoke(env: Env, req: SmokeRequest, tenantId?: string): 
           });
         }
 
-        await context.close();
+        await context.close().catch(() => {});
       }
     }
   } finally {
-    await releasePooledBrowser(env, browser);
+    await releasePooledBrowser(env, pooled);
   }
+
+  const triaged = loaded
+    ? await applyTriage(env, owner, findings, {
+        pageUrl: req.url,
+        ranFamilies: new Set(["console", "network", "load", "responsive"]),
+        viewports: req.viewports,
+      })
+    : { findings, suppressed: [], newFindings: 0, regressions: 0 };
 
   const report: SmokeReport = {
     runId,
     url: req.url,
-    status: !loaded ? "error" : findings.some((f) => f.severity === "critical" || f.severity === "major") ? "fail" : "pass",
+    status: !loaded ? "error" : triaged.findings.some((f) => f.severity === "critical" || f.severity === "major") ? "fail" : "pass",
     startedAt,
     durationMs: Date.now() - t0,
     checks: {
@@ -150,7 +161,10 @@ export async function runSmoke(env: Env, req: SmokeRequest, tenantId?: string): 
       responsiveOverflow: overflowViewports,
     },
     screenshots,
-    findings,
+    findings: triaged.findings,
+    newFindings: triaged.newFindings,
+    regressions: triaged.regressions,
+    suppressed: triaged.suppressed,
   };
 
   await env.ARTIFACTS.put(`tenants/${owner}/runs/${runId}/report.json`, JSON.stringify(report, null, 2), {
@@ -165,7 +179,7 @@ export async function runSmoke(env: Env, req: SmokeRequest, tenantId?: string): 
     status: report.status,
     at: startedAt,
     durationMs: report.durationMs,
-    findings: findings.length,
+    findings: triaged.findings.length,
   });
 
   return report;

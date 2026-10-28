@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "name": "persona-length-limit-explained",
+  "startUrl": "http://localhost:5199/",
+  "viewport": "desktop",
+  "steps": [
+    {
+      "action": {
+        "action": "wait",
+        "ms": 1500
+      },
+      "expect": []
+    },
+    {
+      "action": {
+        "action": "fill",
+        "value": "Breaker5k-Breaker5k-Breaker5k-Breaker5k-Breaker5k-Breaker5k-Breaker5k-Breaker5k-Breaker5k-Breaker5k-Breaker5k-Breaker5k-Breaker5k-Breaker5k-Breaker5k-Breaker5k-Breaker5k-Breaker5k-Breaker5k-Breaker5k-Breaker5k-Breaker5k-Breaker5k-Breaker5k-Breaker5k-ENDMARKER"
+      },
+      "anchor": {
+        "testid": "new-task"
+      },
+      "expect": []
+    }
+  ],
+  "success": [
+    {
+      "kind": "text",
+      "anchor": {
+        "css": "#task-hint"
+      },
+      "includes": "200-character limit"
+    }
+  ],
+  "dynamic": []
+}

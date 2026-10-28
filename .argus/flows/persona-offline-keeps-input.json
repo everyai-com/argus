@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "name": "persona-offline-keeps-input",
+  "startUrl": "http://localhost:5199/",
+  "viewport": "desktop",
+  "steps": [
+    {
+      "action": {
+        "action": "wait",
+        "ms": 1500
+      },
+      "expect": []
+    },
+    {
+      "action": {
+        "action": "fill",
+        "value": "Offline task"
+      },
+      "anchor": {
+        "testid": "new-task"
+      },
+      "expect": []
+    },
+    {
+      "action": {
+        "action": "network",
+        "profile": "offline"
+      },
+      "expect": []
+    },
+    {
+      "action": {
+        "action": "click"
+      },
+      "anchor": {
+        "testid": "add-task"
+      },
+      "expect": []
+    },
+    {
+      "action": {
+        "action": "network",
+        "profile": "none"
+      },
+      "expect": []
+    }
+  ],
+  "success": [
+    {
+      "kind": "text",
+      "anchor": {
+        "role": "alert"
+      },
+      "includes": "save"
+    },
+    {
+      "kind": "state",
+      "store": "draft",
+      "equals": "Offline task"
+    }
+  ],
+  "dynamic": []
+}

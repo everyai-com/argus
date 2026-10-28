@@ -20,7 +20,9 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { z } from "zod";
 import {
   ActionSchema,
+  LeaseNetworkSchema,
   AnchorSchema,
+  AuditCheckSchema,
   PredicateSchema,
   ViewportNameSchema,
 } from "@argus/shared";
@@ -115,6 +117,7 @@ WEAKEST evidence tier it rests on; never upgrade it. Release every session.`,
       colorScheme: z.enum(["light", "dark"]).optional(),
       label: z.string().max(80).optional(),
       authProfile: z.string().optional().describe("start already signed in (see argus_auth_list)"),
+      network: LeaseNetworkSchema.optional().describe("throttle the session: 4g, fast3g, slow3g (DevTools presets)"),
     },
     async (args) => jsonResult(await call("/v1/lease", { method: "POST", body: JSON.stringify(args) }))
   );
@@ -146,7 +149,7 @@ WEAKEST evidence tier it rests on; never upgrade it. Release every session.`,
 
   tool(
     "argus_act",
-    "Perform one action (goto/click/fill/select/press/hover/scroll/back/reload/wait) and report the observed effects. Does NOT produce a verdict.",
+    "Perform one action (goto/click/fill/select/press/hover/scroll/back/reload/wait/viewport/network) and report the observed effects. click takes clickCount:2 for a double-click; network sets throttling or offline mid-session. Does NOT produce a verdict.",
     {
       sessionId: z.string(),
       step: ActionSchema.describe(
@@ -238,8 +241,14 @@ WEAKEST evidence tier it rests on; never upgrade it. Release every session.`,
       url: z.string().url(),
       viewports: z.array(ViewportNameSchema).optional(),
       colorSchemes: z.array(z.enum(["light", "dark"])).optional(),
-      checks: z.array(z.enum(["a11y", "perf", "links", "visual"])).optional(),
+      checks: z.array(AuditCheckSchema).optional(),
       updateBaseline: z.boolean().optional(),
+      masks: z
+        .array(z.string())
+        .max(20)
+        .optional()
+        .describe("CSS selectors painted over before the visual compare (avatars, timestamps); the masked share is reported"),
+      freezeClock: z.string().optional().describe("ISO instant to pin the page clock to during the visual capture"),
       authProfile: z
         .string()
         .optional()
@@ -247,6 +256,21 @@ WEAKEST evidence tier it rests on; never upgrade it. Release every session.`,
       project: z.string().max(60).optional(),
     },
     async (args) => jsonResult(await call("/v1/audit", { method: "POST", body: JSON.stringify(args) }))
+  );
+
+  tool(
+    "argus_crawl",
+    "Sweep a whole site in parallel cloud browsers: breadth-first over same-origin links (read-only — never clicks or submits, skips sign-out links), every page rendered and checked for console errors, failed requests, sideways overflow, covered/zero-size controls, broken images, raw undefined/NaN text, and internal links that lead to a not-found page. Returns the page map plus findings with fingerprints and triage state. Use it to find what to test before writing flows.",
+    {
+      url: z.string().url(),
+      maxPages: z.number().int().min(1).max(60).optional().describe("pages to visit at most (default 20)"),
+      concurrency: z.number().int().min(1).max(6).optional().describe("parallel browsers (default 3)"),
+      viewport: ViewportNameSchema.optional(),
+      include: z.string().optional().describe("only follow links under this path prefix, e.g. /app"),
+      authProfile: z.string().optional().describe("crawl behind the login wall with a saved auth profile"),
+      project: z.string().max(60).optional(),
+    },
+    async (args) => jsonResult(await call("/v1/crawl", { method: "POST", body: JSON.stringify(args) }))
   );
 
   tool("argus_runs", "List recent verification runs.", {}, async () => jsonResult(await call("/v1/runs")));
@@ -286,6 +310,10 @@ WEAKEST evidence tier it rests on; never upgrade it. Release every session.`,
       dynamic: z.array(AnchorSchema).optional(),
       auth: z.string().optional(),
       saveAuthAs: z.string().optional(),
+      persists: z
+        .union([z.literal("success"), z.array(PredicateSchema).min(1).max(20)])
+        .optional()
+        .describe('re-check after one reload; "success" re-checks the state-describing success predicates'),
     },
     async (args) => jsonResult(await call(`/v1/flows/${encodeURIComponent(args.name)}`, { method: "PUT", body: JSON.stringify(args) }))
   );
@@ -320,8 +348,12 @@ WEAKEST evidence tier it rests on; never upgrade it. Release every session.`,
       baseUrl: z.string().url().optional(),
       concurrency: z.number().int().min(1).max(8).optional(),
       project: z.string().max(60).optional(),
+      confirmFailures: z
+        .boolean()
+        .optional()
+        .describe("re-run each failure once; only repeated failures count (default true), disagreements report as flaky"),
     },
-    async ({ names, baseUrl, concurrency, project }) => {
+    async ({ names, baseUrl, concurrency, project, confirmFailures }) => {
       const all = await listFlows(deps.env, deps.tenantId);
       const flows = names?.length ? all.filter((f) => names.includes(f.name)) : all;
       if (flows.length === 0) {
@@ -330,10 +362,30 @@ WEAKEST evidence tier it rests on; never upgrade it. Release every session.`,
       return jsonResult(
         await call("/v1/flows/verify", {
           method: "POST",
-          body: JSON.stringify({ flows, baseUrl, concurrency, project }),
+          body: JSON.stringify({ flows, baseUrl, concurrency, project, confirmFailures }),
         })
       );
     }
+  );
+
+  tool(
+    "argus_triage",
+    "Triage memory for a host: list every finding Argus remembers (new/known/regression/fixed/dismissed), or record a human decision. Dismiss a finding that is not a bug (fingerprint + status:\"dismissed\" + reason) — it stops failing runs and is listed under `suppressed`; reopen with status:\"open\".",
+    {
+      host: z.string().describe("the app's host, or any URL on it"),
+      fingerprint: z.string().optional().describe("a finding's fingerprint (from a smoke/audit report) — with status, records a decision"),
+      status: z.enum(["open", "dismissed"]).optional(),
+      reason: z.string().max(300).optional().describe("why it is dismissed — shown on every later run"),
+    },
+    async ({ host, fingerprint, status, reason }) =>
+      jsonResult(
+        fingerprint && status
+          ? await call("/v1/findings/triage", {
+              method: "POST",
+              body: JSON.stringify({ host, fingerprint, status, reason }),
+            })
+          : await call(`/v1/findings/triage?host=${encodeURIComponent(host)}${status ? `&status=${status}` : ""}`)
+      )
   );
 
   tool(

@@ -17,12 +17,16 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import {
   ActionSchema,
+  LeaseNetworkSchema,
   AnchorSchema,
+  ARGUS_CLOUD_API,
+  AuditCheckSchema,
   FlowSchema,
   PredicateSchema,
   ViewportNameSchema,
   type Flow,
 } from "@argus/shared";
+import { localApi } from "./local";
 
 // --- config -----------------------------------------------------------------
 
@@ -46,12 +50,15 @@ function loadConfig(): { api: string; token?: string } {
     if (parent === dir) break;
     dir = parent;
   }
-  return { api: (api ?? "http://localhost:8787").replace(/\/$/, ""), token };
+  return { api: (api ?? ARGUS_CLOUD_API).replace(/\/$/, ""), token };
 }
 
 const cfg = loadConfig();
 
 async function api(method: string, path: string, body?: unknown): Promise<unknown> {
+  // Electron (local-*) sessions never leave this machine.
+  const local = await localApi(method, path, body);
+  if (local !== undefined) return local;
   const res = await fetch(cfg.api + path, {
     method,
     headers: {
@@ -149,6 +156,20 @@ registerTool(
       .string()
       .optional()
       .describe("start already signed in using a saved auth profile (see argus_auth_list)"),
+    electron: z
+      .object({
+        app: z.string().describe("path to the Electron app (main script or folder)"),
+        executablePath: z.string().optional().describe("Electron binary; default: the electron package"),
+        args: z.array(z.string()).optional(),
+        cwd: z.string().optional(),
+      })
+      .optional()
+      .describe(
+        "test a DESKTOP app: launch this Electron app on this machine instead of leasing a cloud browser. Every session tool (query/act/act_batch/observe/assert/screenshot/release) works the same on it."
+      ),
+    network: LeaseNetworkSchema.optional().describe(
+      "throttle the whole session like a real phone connection: 4g, fast3g or slow3g (Chrome DevTools presets). Change it mid-session with the `network` action, including `offline`."
+    ),
   },
   async (args) => jsonResult(await api("POST", "/v1/lease", args))
 );
@@ -205,7 +226,7 @@ registerTool(
 
 registerTool(
   "argus_act",
-  "Perform one action (goto/click/fill/select/press/hover/scroll/back/reload/wait) and get its OBSERVED effects: navigation, DOM delta, new console errors, new network failures. Target elements by ref (from argus_query) or semantic anchor.",
+  "Perform one action (goto/click/fill/select/press/hover/scroll/back/reload/wait/viewport/network) and get its OBSERVED effects: navigation, DOM delta, new console errors, new network failures. Target elements by ref (from argus_query) or semantic anchor. click takes clickCount:2 for a double-click; network switches throttling mid-session (slow3g, offline, none).",
   { sessionId: z.string(), step: ActionSchema },
   async ({ sessionId, step }) =>
     jsonResult(await api("POST", `/v1/session/${sessionId}/act`, step))
@@ -259,10 +280,14 @@ registerTool(
       height: number;
     };
     // Fetch the PNG and hand it back as image content — visual feedback in-loop.
-    const res = await fetch(cfg.api + shot.url, {
-      headers: cfg.token ? { authorization: `Bearer ${cfg.token}` } : {},
-    });
-    const buf = Buffer.from(await res.arrayBuffer());
+    // A local (Electron) session returns the PNG inline instead of an artifact URL.
+    const inline = (shot as { png?: string }).png;
+    delete (shot as { png?: string }).png;
+    const buf = inline
+      ? Buffer.from(inline, "base64")
+      : Buffer.from(
+          await (await fetch(cfg.api + shot.url, { headers: cfg.token ? { authorization: `Bearer ${cfg.token}` } : {} })).arrayBuffer()
+        );
     return {
       content: [
         { type: "image" as const, data: buf.toString("base64"), mimeType: "image/png" },
@@ -305,8 +330,14 @@ registerTool(
     url: z.string().url(),
     viewports: z.array(ViewportNameSchema).optional(),
     colorSchemes: z.array(z.enum(["light", "dark"])).optional(),
-    checks: z.array(z.enum(["a11y", "perf", "links", "visual"])).optional(),
+    checks: z.array(AuditCheckSchema).optional(),
     updateBaseline: z.boolean().optional(),
+    masks: z
+      .array(z.string())
+      .max(20)
+      .optional()
+      .describe("CSS selectors painted over before the visual compare (avatars, timestamps); the masked share is reported"),
+    freezeClock: z.string().optional().describe("ISO instant to pin the page clock to during the visual capture"),
     authProfile: z
       .string()
       .optional()
@@ -314,6 +345,21 @@ registerTool(
     project: z.string().max(60).optional(),
   },
   async (args) => jsonResult(await api("POST", "/v1/audit", args))
+);
+
+registerTool(
+  "argus_crawl",
+  "Sweep a whole site in parallel cloud browsers: breadth-first over same-origin links (read-only — never clicks or submits, skips sign-out links), every page rendered and checked for console errors, failed requests, sideways overflow, covered/zero-size controls, broken images, raw undefined/NaN text, and internal links that lead to a not-found page. Returns the page map plus findings with fingerprints and triage state. Use it to find what to test before writing flows.",
+  {
+    url: z.string().url(),
+    maxPages: z.number().int().min(1).max(60).optional().describe("pages to visit at most (default 20)"),
+    concurrency: z.number().int().min(1).max(6).optional().describe("parallel browsers (default 3)"),
+    viewport: ViewportNameSchema.optional(),
+    include: z.string().optional().describe("only follow links under this path prefix, e.g. /app"),
+    authProfile: z.string().optional().describe("crawl behind the login wall with a saved auth profile"),
+    project: z.string().max(60).optional(),
+  },
+  async (args) => jsonResult(await api("POST", "/v1/crawl", args))
 );
 
 // --- email / magic links ----------------------------------------------------
@@ -543,6 +589,12 @@ registerTool(
       .string()
       .optional()
       .describe("this is a login flow: on success, save the session as this profile"),
+    persists: z
+      .union([z.literal("success"), z.array(PredicateSchema).min(1).max(20)])
+      .optional()
+      .describe(
+        'what must still hold after one reload once success passed — "success" re-checks the success predicates that describe state (text/visible/state/storage/route). Catches a save the page only pretended to make.'
+      ),
   },
   async (args) => {
     const flow = FlowSchema.parse({
@@ -555,6 +607,7 @@ registerTool(
       dynamic: args.dynamic ?? [],
       ...(args.auth ? { auth: args.auth } : {}),
       ...(args.saveAuthAs ? { saveAuthAs: args.saveAuthAs } : {}),
+      ...(args.persists ? { persists: args.persists } : {}),
     });
     const file = saveFlow(flow);
     return jsonResult({ saved: file, steps: flow.steps.length });
@@ -598,14 +651,35 @@ registerTool(
       .optional()
       .describe("re-home the suite onto this origin (deploy gating)"),
     project: z.string().max(60).optional().describe("tag the run so the dashboard groups it per app"),
+    confirmFailures: z
+      .boolean()
+      .optional()
+      .describe("re-run each failure once; only repeated failures count (default true), disagreements report as flaky"),
   },
-  async ({ names, concurrency, baseUrl, project }) => {
+  async ({ names, concurrency, baseUrl, project, confirmFailures }) => {
     const flows = loadFlows(names);
     if (flows.length === 0) throw new Error(`no flows found in ${flowsDir()}`);
     return jsonResult(
-      await api("POST", "/v1/flows/verify", { flows, concurrency, baseUrl, project, actor: actor() })
+      await api("POST", "/v1/flows/verify", { flows, concurrency, baseUrl, project, confirmFailures, actor: actor() })
     );
   }
+);
+
+registerTool(
+  "argus_triage",
+  "Triage memory for a host: list every finding Argus remembers (new/known/regression/fixed/dismissed), or record a human decision. Dismiss a finding that is not a bug (fingerprint + status:\"dismissed\" + reason) — it stops failing runs and is listed under `suppressed`; reopen with status:\"open\".",
+  {
+    host: z.string().describe("the app's host, or any URL on it"),
+    fingerprint: z.string().optional().describe("a finding's fingerprint (from a smoke/audit report) — with status, records a decision"),
+    status: z.enum(["open", "dismissed"]).optional(),
+    reason: z.string().max(300).optional().describe("why it is dismissed — shown on every later run"),
+  },
+  async ({ host, fingerprint, status, reason }) =>
+    jsonResult(
+      fingerprint && status
+        ? await api("POST", "/v1/findings/triage", { host, fingerprint, status, reason })
+        : await api("GET", `/v1/findings/triage?host=${encodeURIComponent(host)}${status ? `&status=${status}` : ""}`)
+    )
 );
 
 registerTool(

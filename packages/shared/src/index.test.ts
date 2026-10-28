@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ActionSchema,
   ActorSchema,
   AnchorSchema,
   apiError,
@@ -34,6 +35,14 @@ describe("wire contract", () => {
     ).toBe(false);
   });
 
+  it("throttles leases but never leases offline; double-click is a click count", () => {
+    expect(LeaseRequestSchema.parse({ url: "https://example.com", network: "slow3g" }).network).toBe("slow3g");
+    expect(LeaseRequestSchema.safeParse({ url: "https://example.com", network: "offline" }).success).toBe(false);
+    expect(ActionSchema.parse({ action: "network", profile: "offline" })).toEqual({ action: "network", profile: "offline" });
+    expect(ActionSchema.parse({ action: "click", ref: "e3", clickCount: 2 })).toMatchObject({ clickCount: 2 });
+    expect(ActionSchema.safeParse({ action: "click", ref: "e3", clickCount: 0 }).success).toBe(false);
+  });
+
   it("keeps tenant identifiers to one safe storage segment", () => {
     expect(TenantIdSchema.safeParse("team_alpha-2").success).toBe(true);
     expect(TenantIdSchema.safeParse("../../other-team").success).toBe(false);
@@ -44,8 +53,21 @@ describe("wire contract", () => {
     expect(UpdateTenantRequestSchema.safeParse({}).success).toBe(false);
     expect(UpdateTenantRequestSchema.safeParse({ maxBurst: 8 }).success).toBe(true);
     expect(
-      CreateTenantRequestSchema.safeParse({ id: "team", reserved: 4, maxBurst: 2 }).success
+      CreateTenantRequestSchema.safeParse({ id: "team", reserved: 2, maxBurst: 4 }).success
     ).toBe(true);
+    // An unreachable floor would withhold capacity from everyone else.
+    expect(
+      CreateTenantRequestSchema.safeParse({ id: "team", reserved: 4, maxBurst: 2 }).success
+    ).toBe(false);
+  });
+
+  it("only lets http(s) URLs reach a cloud browser", () => {
+    for (const url of ["javascript:alert(1)", "file:///etc/passwd", "data:text/html,x", "chrome://settings"]) {
+      expect(ActionSchema.safeParse({ action: "goto", url }).success).toBe(false);
+      expect(LeaseRequestSchema.safeParse({ url }).success).toBe(false);
+    }
+    expect(ActionSchema.safeParse({ action: "goto", url: "https://app.dev/x" }).success).toBe(true);
+    expect(LeaseRequestSchema.safeParse({ url: "http://localhost:5199/" }).success).toBe(true);
   });
 
   it("requires flows to have actions and a verified success condition", () => {

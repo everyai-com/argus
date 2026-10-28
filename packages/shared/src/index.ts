@@ -16,14 +16,53 @@ export const API_VERSION = "v1" as const;
 export const DEFAULT_LEASE_TTL_SECONDS = 300;
 export const MAX_LEASE_TTL_SECONDS = 540; // browser keep_alive hard cap is 600s
 export const RING_BUFFER_LIMIT = 500;
+/** The hosted Argus cloud — CLI/MCP/init default here so most projects pass no URL. */
+export const ARGUS_CLOUD_API = "https://argus-cloud.everyai-com.workers.dev";
 
 export const VIEWPORTS = {
   mobile: { width: 375, height: 812 },
   tablet: { width: 768, height: 1024 },
   desktop: { width: 1280, height: 800 },
+  /**
+   * A real phone, not a narrow desktop: touch input, a mobile Chrome identity,
+   * `<meta viewport>` honoured, 2x pixels. Same size as `mobile`, which stays a
+   * plain small window so existing mobile baselines keep comparing like for like.
+   */
+  phone: { width: 375, height: 812 },
 } as const;
 export type ViewportName = keyof typeof VIEWPORTS;
-export const ViewportNameSchema = z.enum(["mobile", "tablet", "desktop"]);
+export const ViewportNameSchema = z.enum(["mobile", "tablet", "desktop", "phone"]);
+
+/**
+ * Network throttling, matching Chrome DevTools' presets (throughput in bytes/s,
+ * latency in ms of added round-trip). `none` lifts throttling; `offline` is an
+ * action-only state (a lease can't load its start URL offline).
+ */
+export const NETWORK_PROFILES = {
+  slow3g: { downloadThroughput: 50_000, uploadThroughput: 50_000, latency: 2_000 },
+  fast3g: { downloadThroughput: 180_000, uploadThroughput: 84_375, latency: 563 },
+  "4g": { downloadThroughput: 1_012_500, uploadThroughput: 168_750, latency: 165 },
+} as const;
+export const LeaseNetworkSchema = z.enum(["none", "4g", "fast3g", "slow3g"]);
+export type LeaseNetwork = z.infer<typeof LeaseNetworkSchema>;
+export const NetworkProfileSchema = z.enum(["none", "4g", "fast3g", "slow3g", "offline"]);
+export type NetworkProfile = z.infer<typeof NetworkProfileSchema>;
+
+/**
+ * A URL a cloud browser may open: http(s) only. Browsers are reused across
+ * tenants, so `file:` (the browser host's disk), `javascript:`, `data:` and
+ * `chrome:` pages must never be reachable through the API.
+ */
+export const HttpUrlSchema = z
+  .string()
+  .url()
+  .refine((u) => {
+    try {
+      return ["http:", "https:"].includes(new URL(u).protocol);
+    } catch {
+      return false;
+    }
+  }, "only http(s) URLs can be opened");
 
 /** Evidence tiers, strongest first (adopted from Reticle's grading). */
 export const EvidenceTierSchema = z.enum([
@@ -75,7 +114,7 @@ export const AuthProfileNameSchema = z
   .max(60);
 
 export const LeaseRequestSchema = z.object({
-  url: z.string().url(),
+  url: HttpUrlSchema,
   viewport: ViewportNameSchema.default("desktop"),
   colorScheme: z.enum(["light", "dark"]).default("light"),
   ttlSeconds: z
@@ -87,6 +126,8 @@ export const LeaseRequestSchema = z.object({
   label: z.string().max(80).optional(), // e.g. the flow being driven
   /** Start this session already signed in, using a saved auth profile. */
   authProfile: AuthProfileNameSchema.optional(),
+  /** Throttle the whole session (e.g. slow3g for a phone on a bad connection). */
+  network: LeaseNetworkSchema.optional(),
 });
 export type LeaseRequest = z.infer<typeof LeaseRequestSchema>;
 
@@ -96,6 +137,16 @@ export const LeaseResponseSchema = z.object({
   url: z.string(),
   title: z.string().optional(),
   expiresAt: z.string(), // ISO timestamp
+  /** Where lease time went, per phase (ms) — makes slow leases diagnosable. */
+  timings: z
+    .object({
+      warm: z.boolean(), // reconnected to a parked browser (vs cold launch)
+      browserMs: z.number(),
+      contextMs: z.number(),
+      gotoMs: z.number(),
+      settleMs: z.number(),
+    })
+    .optional(),
 });
 export type LeaseResponse = z.infer<typeof LeaseResponseSchema>;
 
@@ -108,6 +159,12 @@ export const SessionInfoSchema = z.object({
   released: z.boolean().default(false),
   /** Which tenant (project) holds this lease — drives per-tenant fair capping. */
   tenantId: z.string().optional(),
+  /**
+   * `batch` = a browser held by a flow replay / smoke / audit run. It counts
+   * against the same caps as an interactive lease but is not addressable
+   * through /v1/session/:id.
+   */
+  kind: z.enum(["lease", "batch"]).optional(),
 });
 export type SessionInfo = z.infer<typeof SessionInfoSchema>;
 
@@ -137,6 +194,8 @@ export const TenantSchema = z.object({
   maxBurst: z.number().int().min(1).max(120).default(120),
   createdAt: z.string(),
   disabled: z.boolean().default(false),
+  /** Self-serve tenants: the account that owns it — token rotation is refused for anyone else. */
+  ownerUserId: z.string().optional(),
 });
 export type Tenant = z.infer<typeof TenantSchema>;
 
@@ -145,6 +204,10 @@ export const CreateTenantRequestSchema = z.object({
   name: z.string().max(80).optional(),
   reserved: z.number().int().min(0).max(120).default(0),
   maxBurst: z.number().int().min(1).max(120).default(120),
+}).refine((t) => t.maxBurst >= t.reserved, {
+  // A floor above the ceiling is unreachable, yet it would still withhold
+  // capacity from every other tenant.
+  message: "maxBurst must be ≥ reserved",
 });
 export type CreateTenantRequest = z.infer<typeof CreateTenantRequestSchema>;
 
@@ -274,13 +337,15 @@ export type QueryResponse = z.infer<typeof QueryResponseSchema>;
 // ---------------------------------------------------------------------------
 
 export const ActionSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("goto"), url: z.string().url() }),
+  z.object({ action: z.literal("goto"), url: HttpUrlSchema }),
   z.object({ action: z.literal("back") }),
   z.object({ action: z.literal("reload") }),
   z.object({
     action: z.literal("click"),
     ref: z.string().optional(),
     anchor: AnchorSchema.optional(),
+    /** 2 = double-click (two click events + dblclick): finds double-submit bugs. */
+    clickCount: z.number().int().min(1).max(3).optional(),
   }),
   z.object({
     action: z.literal("fill"),
@@ -311,6 +376,23 @@ export const ActionSchema = z.discriminatedUnion("action", [
     amount: z.number().int().default(600),
   }),
   z.object({ action: z.literal("wait"), ms: z.number().int().min(50).max(10_000) }),
+  /**
+   * Change the screen mid-session: a preset (mobile/tablet/desktop), an exact
+   * size, and/or the colour scheme — one session, or one flow, checks phone,
+   * desktop and dark mode without re-leasing.
+   */
+  z.object({
+    action: z.literal("viewport"),
+    viewport: ViewportNameSchema.optional(),
+    width: z.number().int().min(240).max(3840).optional(),
+    height: z.number().int().min(240).max(2400).optional(),
+    colorScheme: z.enum(["light", "dark"]).optional(),
+  }),
+  /**
+   * Change network conditions mid-session: throttle, go `offline` (then try to
+   * submit), or restore with `none`. Flows replay it like `viewport`.
+   */
+  z.object({ action: z.literal("network"), profile: NetworkProfileSchema }),
 ]);
 export type Action = z.infer<typeof ActionSchema>;
 
@@ -323,14 +405,77 @@ export const ActEffectsSchema = z.object({
   newConsoleErrors: z.number(),
   newNetworkFailures: z.number(),
   focusMoved: z.boolean().optional(),
+  /** DOM mutations (nodes, attributes, text) the action caused. */
+  domMutations: z.number().optional(),
+  /**
+   * An interaction (click/select/press) that produced NOTHING observable: no
+   * navigation, no DOM mutation, no focus move, no request, no console. The
+   * dead-button class, flagged the moment it happens.
+   */
+  silentAction: z.boolean().optional(),
+  /** A request failed (≥400 / network error) and the page showed no change — an error the user never sees. */
+  unsurfacedFailure: z.boolean().optional(),
+  /**
+   * The page fits the viewport before the action and overflows sideways after
+   * it (e.g. a long unbroken value rendered without wrapping) — layout the
+   * action broke, which a check on first load never sees.
+   */
+  newHorizontalOverflow: z.boolean().optional(),
+  /**
+   * Deterministic layout/content problems present after the action that were
+   * not there before it (covered controls, raw `NaN`/`undefined` text, broken
+   * images…) — one entry per rule, with samples. After a navigation: the new
+   * page's problems.
+   */
+  newLayoutIssues: z
+    .array(z.object({ rule: z.string(), count: z.number().int(), samples: z.array(z.string()) }))
+    .optional(),
+  /**
+   * The app's own request failed, the page changed anyway, and no error was
+   * shown (no alert, no "error/failed/try again" text appeared) — a failure
+   * presented as success. The optimistic-UI lie, caught as it happens.
+   */
+  failureShownAsSuccess: z.boolean().optional(),
+  /**
+   * What the page showed WHILE the action's own request was still in flight —
+   * sampled once, only when a request stayed pending ≥150ms (a fast request
+   * needs no spinner). `feedback` false on an interaction = the user stared at
+   * an unchanged screen while the app worked: double-taps and rage-clicks
+   * start here. Tier: dom.
+   */
+  pending: z
+    .object({
+      inFlight: z.number().int(),
+      afterMs: z.number(),
+      feedback: z.boolean(),
+      signals: z.array(z.string()),
+    })
+    .optional(),
+  /** Where the act's time went (ms): measure-before, the action itself, settling, measure-after. */
+  timings: z.object({ before: z.number(), action: z.number(), settle: z.number(), after: z.number() }).optional(),
 });
 export type ActEffects = z.infer<typeof ActEffectsSchema>;
+
+/**
+ * The browser connection was lost and re-established. `pageReattached: false`
+ * means the page (and its cookies/storage) is NEW — anything the app kept
+ * client-side is gone, so a later "data lost" finding is Argus's, not the app's.
+ */
+export const RecoveredSchema = z.object({
+  at: z.string(),
+  pageReattached: z.boolean(),
+  /** Where a new page was put back (the last URL the session was on). */
+  url: z.string().optional(),
+});
+export type Recovered = z.infer<typeof RecoveredSchema>;
 
 export const ActResultSchema = z.object({
   ok: z.boolean(),
   effects: ActEffectsSchema.optional(),
   resolution: AnchorResolutionSchema.optional(),
   error: z.string().optional(),
+  /** Set on the act during which the session recovered — never a silent reset. */
+  recovered: RecoveredSchema.optional(),
 });
 export type ActResult = z.infer<typeof ActResultSchema>;
 
@@ -401,6 +546,21 @@ export const ObserveResponseSchema = z.object({
   console: z.array(ConsoleEventSchema).default([]),
   stream: z.array(StreamEventSchema).default([]),
   route: z.object({ url: z.string(), title: z.string() }).optional(),
+  /**
+   * Present when events after `since` may be MISSING: per buffer, every event
+   * with seq ≤ the value might have been dropped (ring-buffer overflow, or the
+   * session's DO restarted and its in-memory buffers were lost). Absence-based
+   * conclusions over that window are unverifiable — re-run the action.
+   */
+  lostThrough: z
+    .object({
+      network: z.number().int().optional(),
+      console: z.number().int().optional(),
+      stream: z.number().int().optional(),
+    })
+    .optional(),
+  /** The session's DO restarted; `pageReattached: false` means the page was reloaded at its start URL. */
+  recovered: RecoveredSchema.optional(),
 });
 export type ObserveResponse = z.infer<typeof ObserveResponseSchema>;
 
@@ -630,7 +790,7 @@ export type JudgedSeverity = z.infer<typeof JudgedSeveritySchema>;
 // ---------------------------------------------------------------------------
 
 export const SmokeRequestSchema = z.object({
-  url: z.string().url(),
+  url: HttpUrlSchema,
   viewports: z.array(ViewportNameSchema).default(["mobile", "tablet", "desktop"]),
   colorSchemes: z.array(z.enum(["light", "dark"])).default(["light"]),
   /** Which app this run belongs to — powers the fleet view. */
@@ -652,7 +812,21 @@ export const FindingSchema = z.object({
     "flow",
     "perf",
     "link",
+    "layout", // deterministic geometry: occlusion, zero-size, tap targets, imagery
+    "content", // leaked placeholders, raw i18n keys, "undefined"/"NaN" in the UI
   ]),
+  /** Stable rule id, e.g. "a11y/color-contrast", "layout/occlusion". */
+  rule: z.string().optional(),
+  /** Identity across runs: hash(host, path, rule, subject[, viewport]). Survives few-px shifts. */
+  fingerprint: z.string().optional(),
+  /** What triage memory knows about this finding (absent when triage did not run). */
+  triage: z
+    .object({
+      state: z.enum(["new", "known", "regression"]),
+      firstSeen: z.string().optional(),
+      occurrences: z.number().int().optional(),
+    })
+    .optional(),
   summary: z.string(),
   detail: z.string().optional(),
   evidence: z
@@ -676,6 +850,32 @@ export const FindingSchema = z.object({
 });
 export type Finding = z.infer<typeof FindingSchema>;
 
+/** A finding the team dismissed — kept out of `findings` and the verdict, but never silently. */
+export const SuppressedFindingSchema = z.object({
+  fingerprint: z.string(),
+  summary: z.string(),
+  reason: z.string().optional(),
+});
+
+/** Triage counts shared by smoke and audit reports. */
+const TriageCountsShape = {
+  /** Findings never seen before on this host. */
+  newFindings: z.number().int().optional(),
+  /** Findings that were fixed (or auto-closed) and came back. */
+  regressions: z.number().int().optional(),
+  suppressed: z.array(SuppressedFindingSchema).optional(),
+};
+
+export const TriageStatusSchema = z.enum(["open", "dismissed", "fixed"]);
+export const TriageUpdateSchema = z.object({
+  /** Host the finding belongs to (or a URL on it). */
+  host: z.string().min(1).max(253),
+  fingerprint: z.string().regex(/^[a-f0-9]{16}$/),
+  status: z.enum(["open", "dismissed"]),
+  reason: z.string().max(300).optional(),
+});
+export type TriageUpdate = z.infer<typeof TriageUpdateSchema>;
+
 export const SmokeReportSchema = z.object({
   runId: z.string(),
   url: z.string(),
@@ -688,6 +888,7 @@ export const SmokeReportSchema = z.object({
     failedRequests: z.number(),
     responsiveOverflow: z.array(ViewportNameSchema), // viewports with x-overflow
   }),
+  ...TriageCountsShape,
   screenshots: z.array(
     z.object({
       viewport: ViewportNameSchema,
@@ -704,13 +905,24 @@ export type SmokeReport = z.infer<typeof SmokeReportSchema>;
 // Audit — the full UX/visual pass: a11y, perf, links, visual regression
 // ---------------------------------------------------------------------------
 
+export const AuditCheckSchema = z.enum(["a11y", "perf", "links", "visual", "layout"]);
+
 export const AuditRequestSchema = z.object({
-  url: z.string().url(),
+  url: HttpUrlSchema,
   viewports: z.array(ViewportNameSchema).default(["mobile", "desktop"]),
   colorSchemes: z.array(z.enum(["light", "dark"])).default(["light"]),
-  checks: z
-    .array(z.enum(["a11y", "perf", "links", "visual"]))
-    .default(["a11y", "perf", "links", "visual"]),
+  checks: z.array(AuditCheckSchema).default(["a11y", "perf", "links", "visual", "layout"]),
+  /**
+   * CSS selectors painted over before the visual compare (avatars, live
+   * counters). The masked share of the screen is reported on every diff, and a
+   * mostly-masked compare is flagged as hollow — masking is never silent.
+   */
+  masks: z.array(z.string().min(1).max(200)).max(20).optional(),
+  /**
+   * Pin the page clock for the visual capture (ISO instant) so rendered dates
+   * match across runs. Default: the real time when the capture starts.
+   */
+  freezeClock: z.string().datetime().optional(),
   /** Baseline set to compare against / create. Defaults to a hash of the URL. */
   baselineKey: z.string().max(120).optional(),
   /** Update baselines to the current screenshots after diffing. */
@@ -745,7 +957,14 @@ export type PerfMetrics = z.infer<typeof PerfMetricsSchema>;
 export const VisualDiffSchema = z.object({
   viewport: ViewportNameSchema,
   colorScheme: z.enum(["light", "dark"]),
-  status: z.enum(["match", "diff", "baseline-created", "size-mismatch"]),
+  /** `unstable`: the screen never produced two identical frames — not compared, not a diff. */
+  status: z.enum(["match", "diff", "baseline-created", "size-mismatch", "unstable"]),
+  /** Share of the screen (0..1) painted over by `masks`. */
+  maskedPct: z.number().optional(),
+  /** Third-party analytics/ads/chat requests blocked during the capture. */
+  blockedRequests: z.number().int().optional(),
+  /** Frames captured before two consecutive ones were byte-identical. */
+  stableAfterFrames: z.number().int().optional(),
   diffRatio: z.number().optional(), // 0..1 fraction of pixels changed
   currentKey: z.string(),
   baselineKey: z.string().optional(),
@@ -769,8 +988,61 @@ export const AuditReportSchema = z.object({
   brokenLinks: z.number().int().default(0),
   screenshots: SmokeReportSchema.shape.screenshots,
   findings: z.array(FindingSchema),
+  ...TriageCountsShape,
 });
 export type AuditReport = z.infer<typeof AuditReportSchema>;
+
+// ---------------------------------------------------------------------------
+// Crawl — sweep a whole site in parallel cloud browsers, detectors on every page
+// ---------------------------------------------------------------------------
+
+export const CrawlRequestSchema = z.object({
+  url: HttpUrlSchema,
+  /** Pages to visit at most (breadth-first from `url`). */
+  maxPages: z.number().int().min(1).max(60).default(20),
+  /** Parallel browsers (each holds a tenant slot, like any other browser). */
+  concurrency: z.number().int().min(1).max(6).default(3),
+  viewport: ViewportNameSchema.default("desktop"),
+  /** Only follow links under this path prefix (default: the whole origin). */
+  include: z.string().startsWith("/").max(200).optional(),
+  /** Crawl behind the login wall with a saved auth profile. */
+  authProfile: AuthProfileNameSchema.optional(),
+  project: z.string().max(60).optional(),
+});
+export type CrawlRequest = z.infer<typeof CrawlRequestSchema>;
+
+export const CrawlPageSchema = z.object({
+  url: z.string(),
+  /** The page that linked here first (absent for the start page). */
+  from: z.string().optional(),
+  title: z.string().optional(),
+  /** HTTP status of the document — recorded, never trusted alone (SPAs answer 200 everywhere). */
+  httpStatus: z.number().int().optional(),
+  /** The RENDERED page is a not-found page (status 404 or "not found" content). */
+  notFound: z.boolean(),
+  loadMs: z.number().optional(),
+  findings: z.number().int(),
+  linksOut: z.number().int(),
+  screenshotKey: z.string().optional(),
+  error: z.string().optional(),
+  /** Not tested, and why — e.g. a linked JSON/API document is not a page. */
+  skipped: z.string().optional(),
+});
+
+export const CrawlReportSchema = z.object({
+  runId: z.string(),
+  url: z.string(),
+  status: z.enum(["pass", "fail", "error"]),
+  startedAt: z.string(),
+  durationMs: z.number(),
+  pages: z.array(CrawlPageSchema),
+  /** More same-site links were found than maxPages allowed. */
+  truncated: z.boolean(),
+  screenshots: SmokeReportSchema.shape.screenshots,
+  findings: z.array(FindingSchema),
+  ...TriageCountsShape,
+});
+export type CrawlReport = z.infer<typeof CrawlReportSchema>;
 
 // ---------------------------------------------------------------------------
 // Flows — recorded, semantic-anchored, deterministically replayable
@@ -790,7 +1062,7 @@ export const FlowSchema = z.object({
   name: z
     .string()
     .regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/, "single safe path segment"),
-  startUrl: z.string().url(),
+  startUrl: HttpUrlSchema,
   viewport: ViewportNameSchema.default("desktop"),
   steps: z.array(FlowStepSchema).min(1),
   success: z.array(PredicateSchema).min(1), // the golden end condition
@@ -805,6 +1077,15 @@ export const FlowSchema = z.object({
    * Set on the login flow; every other flow then references it via `auth`.
    */
   saveAuthAs: AuthProfileNameSchema.optional(),
+  /**
+   * What must STILL hold after one reload once `success` passed — a save the
+   * page only pretended to make passes `success` and fails here. `"success"`
+   * re-checks the success predicates that describe state (text, visible,
+   * hidden, state, storage, route); event-window ones (network, console,
+   * stream, signal) describe the past and are skipped. Keep toasts and other
+   * deliberately transient UI out of it.
+   */
+  persists: z.union([z.literal("success"), z.array(PredicateSchema).min(1).max(20)]).optional(),
 });
 export type Flow = z.infer<typeof FlowSchema>;
 
@@ -820,6 +1101,10 @@ export const FlowVerdictSchema = z.enum([
   "expectation_failed",
   "success_condition_failed",
   "error",
+  /** No browser slot within the wait budget — the app was NOT tested. */
+  "fleet_busy",
+  /** `success` held, then a reload lost it (`persists`): the outcome was never really saved. */
+  "not_persisted",
 ]);
 export type FlowVerdict = z.infer<typeof FlowVerdictSchema>;
 
@@ -833,6 +1118,27 @@ export const FlowActionSchema = z.union([
   z.object({ command: z.string().min(1) }),
 ]);
 export type FlowAction = z.infer<typeof FlowActionSchema>;
+
+/**
+ * A failed replay is re-run once before it counts. `confirmed`: both runs
+ * failed the same way (code decided it twice). `flaky`: they disagreed — the
+ * flow was not reliably tested, and a flaky result never fails a build.
+ */
+export const ReplayConfirmationSchema = z.object({
+  state: z.enum(["confirmed", "flaky"]),
+  second: z
+    .object({
+      status: z.enum(["ok", "drift", "error"]),
+      verdict: FlowVerdictSchema.optional(),
+      failedStep: z.number().int().optional(),
+      whatChanged: z.string().optional(),
+    })
+    .optional(),
+});
+
+/** Suite outcome: `untested` = Argus could not test (no browser slot, target unreachable) — distinct from a regression. */
+export const SuiteStatusSchema = z.enum(["pass", "fail", "flaky", "untested"]);
+export type SuiteStatus = z.infer<typeof SuiteStatusSchema>;
 
 export const FlowReplayResultSchema = z.object({
   flow: z.string(),
@@ -853,6 +1159,9 @@ export const FlowReplayResultSchema = z.object({
   screenshotKey: z.string().optional(), // final-state screenshot
   /** Vision-judge triage, attached to failures when the judge ran. */
   triage: FailureTriageSchema.optional(),
+  confirmation: ReplayConfirmationSchema.optional(),
+  /** A saved flow that reproduces this failure (replay it with argus_flow_replay). */
+  reproFlow: z.string().optional(),
 });
 export type FlowReplayResult = z.infer<typeof FlowReplayResultSchema>;
 
@@ -1024,3 +1333,82 @@ export function apiError(
       : {}),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Persona launch QA — five first-time users, one ranked list
+// ---------------------------------------------------------------------------
+
+export const EvidenceTierNameSchema = z.enum(["signal", "consequence", "dom", "visual"]);
+export const PersonaSeveritySchema = z.enum(["blocker", "major", "minor"]);
+
+export const PersonaMomentSchema = z.object({
+  kind: z.string().max(40),
+  where: z.string().max(500),
+  element: z.record(z.string(), z.string()).optional(),
+  symptom: z.string().max(80),
+  tried: z.string().max(2000).optional(),
+  expected: z.string().max(2000).optional(),
+  saw: z.string().max(4000).optional(),
+  severity: z.string().max(20),
+  evidence: z
+    .object({
+      screenshot: z.string().max(500).optional(),
+      tier: z.string().max(20).optional(),
+      effects: z.record(z.string(), z.unknown()).optional(),
+    })
+    .optional(),
+});
+export type PersonaMoment = z.infer<typeof PersonaMomentSchema>;
+
+export const PersonaReportSchema = z.object({
+  persona: z.string().max(40),
+  reachedSuccess: z.boolean(),
+  moments: z.array(PersonaMomentSchema).max(100),
+  coverage: z.unknown().optional(),
+});
+export type PersonaReport = z.infer<typeof PersonaReportSchema>;
+
+/** One issue after the merge: a page + element + symptom, with every user who hit it. */
+export const PersonaIssueSchema = z.object({
+  key: z.string().max(700),
+  symptom: z.string().max(80),
+  where: z.string().max(500),
+  element: z.string().max(300),
+  personas: z.array(z.string().max(40)).max(10),
+  severity: z.string().max(20),
+  /** The strongest sighting's tier, each sighting already checked against its evidence. */
+  tier: EvidenceTierNameSchema,
+  saw: z.array(z.string().max(4100)).max(20),
+  expected: z.array(z.string().max(2100)).max(20).default([]),
+  tried: z.array(z.string().max(2100)).max(20).default([]),
+  screenshots: z.array(z.string().max(500)).max(30),
+});
+export type PersonaIssue = z.infer<typeof PersonaIssueSchema>;
+
+export const PersonaRunUploadSchema = z.object({
+  url: HttpUrlSchema,
+  goal: z.string().min(1).max(300),
+  reports: z.array(PersonaReportSchema).max(10),
+  issues: z.array(PersonaIssueSchema).max(200),
+  project: z.string().max(60).optional(),
+});
+export type PersonaRunUpload = z.infer<typeof PersonaRunUploadSchema>;
+
+export const PersonaRunSchema = PersonaRunUploadSchema.extend({
+  id: z.string(),
+  createdAt: z.string(),
+});
+export type PersonaRun = z.infer<typeof PersonaRunSchema>;
+
+/** The list view: enough to draw a row without fetching every run. */
+export const PersonaRunSummarySchema = z.object({
+  id: z.string(),
+  url: z.string(),
+  goal: z.string(),
+  createdAt: z.string(),
+  reached: z.number().int(),
+  personas: z.number().int(),
+  issues: z.number().int(),
+  worst: z.string().optional(),
+});
+export type PersonaRunSummary = z.infer<typeof PersonaRunSummarySchema>;

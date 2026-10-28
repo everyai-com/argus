@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "id": "screen-sessions",
+  "description": "Live cloud browser sessions with lease clocks; shows empty-state explanation when none are leased.",
+  "platform": "web",
+  "requires": [
+    "screen-runs-list"
+  ],
+  "steps": [
+    {
+      "kind": "tap",
+      "target": {
+        "role": "link",
+        "name": "SMOKE 825e0cd8 13m ago",
+        "text": "SMOKE 825e0cd8 13m ago",
+        "selector": "a:nth-of-type(3)",
+        "point": {
+          "x": 836,
+          "y": 402.765625
+        }
+      },
+      "at": "https://argus-cloud.everyai-com.workers.dev/?tab=runs&run=825e0cd8|Argus — browser verification console|2c0ab88c3196"
+    },
+    {
+      "kind": "tap",
+      "target": {
+        "role": "button",
+        "name": "← Runs",
+        "text": "← Runs",
+        "selector": "div:nth-of-type(3) > div:nth-of-type(1) > button:nth-of-type(1)",
+        "point": {
+          "x": 291.734375,
+          "y": 231.265625
+        }
+      },
+      "at": "https://argus-cloud.everyai-com.workers.dev/?tab=runs|Argus — browser verification console|7b366bbb115e"
+    },
+    {
+      "kind": "tap",
+      "target": {
+        "role": "link",
+        "name": "FLOWS 92069727 13m ago",
+        "text": "FLOWS 92069727 13m ago",
+        "selector": "div:nth-of-type(3) > a:nth-of-type(1)",
+        "point": {
+          "x": 836,
+          "y": 321.765625
+        }
+      },
+      "at": "https://argus-cloud.everyai-com.workers.dev/?tab=runs&run=92069727|Argus — browser verification console|2c0ab88c3196"
+    },
+    {
+      "kind": "tap",
+      "target": {
+        "role": "button",
+        "name": "Sessions",
+        "text": "Sessions",
+        "selector": "button:nth-of-type(3)",
+        "point": {
+          "x": 115.5,
+          "y": 193.125
+        }
+      },
+      "at": "https://argus-cloud.everyai-com.workers.dev/?tab=sessions|Argus — browser verification console|a1e30c549f8c"
+    }
+  ],
+  "screenId": "sessions",
+  "expect": {
+    "elements": [
+      "Sessions",
+      "Capacity",
+      "GitHub",
+      "Account",
+      "API token",
+      "Clear token"
+    ]
+  },
+  "createdAt": "2026-10-14T09:02:02.194Z",
+  "updatedAt": "2026-10-14T09:02:02.194Z"
+}

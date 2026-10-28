@@ -1,7 +1,7 @@
 {
   "name": "@argus/mcp",
   "version": "0.1.0",
-  "description": "Argus MCP server — cloud browser verification tools for any MCP client.",
+  "description": "Argus MCP server \u2014 cloud browser verification tools for any MCP client.",
   "type": "module",
   "license": "Apache-2.0",
   "repository": {
@@ -31,11 +31,12 @@
     "access": "public"
   },
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/index.js --banner:js=\"#!/usr/bin/env node\" && chmod +x dist/index.js",
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/index.js --external:playwright-core --external:electron --banner:js=\"#!/usr/bin/env node\" && chmod +x dist/index.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.31.0",
+    "playwright-core": "^1.64.1",
     "zod": "^4.6.5"
   },
   "devDependencies": {

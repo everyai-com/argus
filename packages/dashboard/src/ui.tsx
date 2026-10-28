@@ -29,7 +29,8 @@ export function toneOf(status?: string): "pass" | "fail" | "warn" | "info" {
   const s = (status ?? "").toLowerCase();
   if (PASS.has(s)) return "pass";
   if (FAIL.has(s)) return "fail";
-  if (s === "warn" || s === "major" || s === "drift") return "warn";
+  // flaky / untested: not a regression, not a pass — always visible as a warning.
+  if (s === "warn" || s === "major" || s === "drift" || s === "flaky" || s === "untested" || s === "unstable") return "warn";
   return "info";
 }
 
