@@ -9,7 +9,7 @@
  * (Detector set after bugpatrol's detection rubric, Apache-2.0.)
  */
 import type { Page } from "@cloudflare/playwright";
-import type { Finding, ViewportName } from "@argus/shared";
+import type { Action, ActEffects, Finding, ViewportName } from "@argus/shared";
 
 export interface DetectorHit {
   rule: DetectorRule;
@@ -349,4 +349,67 @@ export async function pendingFeedback(page: Page): Promise<{ feedback: boolean; 
       return { feedback: signals.length > 0, signals };
     })
     .catch(() => none);
+}
+
+/** Everything one act observed — the input to `actEffects`, from either backend. */
+export interface ActWindow {
+  action: Action;
+  urlBefore: string;
+  urlAfter: string;
+  navigated: boolean;
+  before: PageState;
+  after: PageState;
+  watch: boolean;
+  /** Buffered events; only those with seq > seqBefore belong to this act. */
+  network: Array<{ seq: number; url: string; failed: boolean }>;
+  console: Array<{ seq: number; level: string }>;
+  seqBefore: number;
+  pending?: ActEffects["pending"];
+  timings: NonNullable<ActEffects["timings"]>;
+}
+
+/**
+ * What an act DID, decided from what it observed. Pure, so the cloud session
+ * and a local (Electron) session report the same effects for the same page.
+ */
+export function actEffects(w: ActWindow): ActEffects {
+  const { action, before, after, navigated } = w;
+  const focusMoved = after.focusChanged;
+  const introduced = w.watch ? newIssues(before.hits, after.hits, navigated) : [];
+  // Only the app's own requests: a failed analytics beacon is not the app lying.
+  const host = (u: string) => {
+    try {
+      return new URL(u).host;
+    } catch {
+      return "";
+    }
+  };
+  const pageHost = host(w.urlAfter);
+  const net = w.network.filter((n) => n.seq > w.seqBefore);
+  const con = w.console.filter((c) => c.seq > w.seqBefore);
+  const ownFailures = net.filter((n) => n.failed && host(n.url) === pageHost).length;
+  const newConsoleErrors = con.filter((c) => c.level === "error").length;
+  const newNetworkFailures = net.filter((n) => n.failed).length;
+  const mutations = after.mutations;
+  const nothingChanged = !navigated && mutations === 0 && !focusMoved;
+  // Interactions that should DO something. Fill/select legitimately just
+  // store a value; hover/scroll/wait aren't expected to change anything.
+  const interaction = action.action === "click" || (action.action === "press" && /^(Enter| |Space)$/.test(action.key));
+  return {
+    urlBefore: w.urlBefore,
+    urlAfter: w.urlAfter,
+    navigated,
+    domNodeDelta: after.nodes - before.nodes,
+    newConsoleErrors,
+    newNetworkFailures,
+    focusMoved,
+    ...(mutations >= 0 ? { domMutations: mutations } : {}),
+    silentAction: interaction && nothingChanged && net.length === 0 && con.length === 0 && !after.focusEntered,
+    unsurfacedFailure: newNetworkFailures > 0 && nothingChanged,
+    newHorizontalOverflow: !before.overflow && after.overflow && !navigated,
+    ...(introduced.length ? { newLayoutIssues: introduced } : {}),
+    failureShownAsSuccess: ownFailures > 0 && !navigated && mutations > 0 && after.errors <= before.errors,
+    ...(w.pending ? { pending: w.pending } : {}),
+    timings: w.timings,
+  };
 }

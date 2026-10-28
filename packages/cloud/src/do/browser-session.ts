@@ -40,7 +40,7 @@ import {
   type NetworkProfile,
 } from "@argus/shared";
 import { evalPredicate, resolveAnchor, weakestTier, type LostThrough } from "../verify";
-import { newIssues, pageState, pendingFeedback } from "../detectors";
+import { actEffects, pageState, pendingFeedback } from "../detectors";
 import { applyNetwork, applyViewport, contextOptionsFor, settleBudget, slowRequest, trackInflight, waitForQuiet } from "../flow-utils";
 import { hostOf, loadAuthProfile, saveAuthProfile } from "../auth-store";
 import { throttledLaunch } from "../pool";
@@ -829,58 +829,24 @@ export class BrowserSession extends DurableObject<Env> {
     const urlAfter = page.url();
     // Same single read also decides focus: landing on the element acted on is not an effect.
     const after = await pageState(page, { detectors: watch, observe: "read" });
-    const focusMoved = after.focusChanged;
-
-    const navigated = this.navCount > navBefore || urlBefore !== urlAfter;
-    const introduced = watch ? newIssues(before.hits, after.hits, navigated) : [];
-    // Only the app's own requests: a failed analytics beacon is not the app lying.
-    const pageHost = (() => {
-      try {
-        return new URL(urlAfter).host;
-      } catch {
-        return "";
-      }
-    })();
-    const ownFailures = this.netBuf.filter((n) => {
-      if (n.seq <= seqBefore || !n.failed) return false;
-      try {
-        return new URL(n.url).host === pageHost;
-      } catch {
-        return false;
-      }
-    }).length;
-    const newConsoleErrors = this.conBuf.filter((c) => c.seq > seqBefore && c.level === "error").length;
-    const newNetworkFailures = this.netBuf.filter((n) => n.seq > seqBefore && n.failed).length;
-    const anyRequest = this.netBuf.some((n) => n.seq > seqBefore);
-    const anyConsole = this.conBuf.some((c) => c.seq > seqBefore);
-    const mutations = after.mutations;
-    const nothingChanged = !navigated && mutations === 0 && !focusMoved;
-    // Interactions that should DO something. Fill/select legitimately just
-    // store a value; hover/scroll/wait aren't expected to change anything.
-    const interaction = action.action === "click" || (action.action === "press" && /^(Enter| |Space)$/.test(action.key));
-
     return {
       ok: true,
       resolution,
       ...recovered,
-      effects: {
+      effects: actEffects({
+        action,
         urlBefore,
         urlAfter,
-        navigated,
-        domNodeDelta: after.nodes - before.nodes,
-        newConsoleErrors,
-        newNetworkFailures,
-        focusMoved,
-        ...(mutations >= 0 ? { domMutations: mutations } : {}),
-        silentAction: interaction && nothingChanged && !anyRequest && !anyConsole && !after.focusEntered,
-        unsurfacedFailure: newNetworkFailures > 0 && nothingChanged,
-        newHorizontalOverflow: !before.overflow && after.overflow && !navigated,
-        ...(introduced.length ? { newLayoutIssues: introduced } : {}),
-        failureShownAsSuccess:
-          ownFailures > 0 && !navigated && mutations > 0 && after.errors <= before.errors,
-        ...(pending ? { pending } : {}),
+        navigated: this.navCount > navBefore || urlBefore !== urlAfter,
+        before,
+        after,
+        watch,
+        network: this.netBuf,
+        console: this.conBuf,
+        seqBefore,
+        pending,
         timings: { before: tAction - tStart, action: tSettle - tAction, settle: tAfter - tSettle, after: Date.now() - tAfter },
-      },
+      }),
     };
   }
 

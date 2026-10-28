@@ -124,6 +124,11 @@ dashboard hosting), `packages/cli`, `packages/mcp`, `packages/dashboard`,
   that wiped storage and read as the app losing data.
 - `persists` on a flow re-checks state predicates after one reload
   (`not_persisted` verdict) — the optimistic-UI-never-saved class.
+- Electron sessions (`argus_lease { electron }`, ids `local-*`) run in the
+  stdio MCP server with the cloud's own engine modules — keep
+  `detectors.ts`, `flow-utils.ts` and `verify.ts` free of Worker-only
+  imports (types only from `@cloudflare/playwright`), or desktop breaks.
+  Effects come from the pure `actEffects`, shared by both backends.
 - `argus fix` ships a fix only when the flow passes on `--preview` of the
   fixed branch and nothing else breaks; edits under `.argus/` are refused;
   a PR a human closed unmerged is never reopened. `argus patrol` advances

@@ -26,6 +26,7 @@ import {
   ViewportNameSchema,
   type Flow,
 } from "@argus/shared";
+import { localApi } from "./local";
 
 // --- config -----------------------------------------------------------------
 
@@ -55,6 +56,9 @@ function loadConfig(): { api: string; token?: string } {
 const cfg = loadConfig();
 
 async function api(method: string, path: string, body?: unknown): Promise<unknown> {
+  // Electron (local-*) sessions never leave this machine.
+  const local = await localApi(method, path, body);
+  if (local !== undefined) return local;
   const res = await fetch(cfg.api + path, {
     method,
     headers: {
@@ -152,6 +156,17 @@ registerTool(
       .string()
       .optional()
       .describe("start already signed in using a saved auth profile (see argus_auth_list)"),
+    electron: z
+      .object({
+        app: z.string().describe("path to the Electron app (main script or folder)"),
+        executablePath: z.string().optional().describe("Electron binary; default: the electron package"),
+        args: z.array(z.string()).optional(),
+        cwd: z.string().optional(),
+      })
+      .optional()
+      .describe(
+        "test a DESKTOP app: launch this Electron app on this machine instead of leasing a cloud browser. Every session tool (query/act/act_batch/observe/assert/screenshot/release) works the same on it."
+      ),
     network: LeaseNetworkSchema.optional().describe(
       "throttle the whole session like a real phone connection: 4g, fast3g or slow3g (Chrome DevTools presets). Change it mid-session with the `network` action, including `offline`."
     ),
@@ -265,10 +280,14 @@ registerTool(
       height: number;
     };
     // Fetch the PNG and hand it back as image content — visual feedback in-loop.
-    const res = await fetch(cfg.api + shot.url, {
-      headers: cfg.token ? { authorization: `Bearer ${cfg.token}` } : {},
-    });
-    const buf = Buffer.from(await res.arrayBuffer());
+    // A local (Electron) session returns the PNG inline instead of an artifact URL.
+    const inline = (shot as { png?: string }).png;
+    delete (shot as { png?: string }).png;
+    const buf = inline
+      ? Buffer.from(inline, "base64")
+      : Buffer.from(
+          await (await fetch(cfg.api + shot.url, { headers: cfg.token ? { authorization: `Bearer ${cfg.token}` } : {} })).arrayBuffer()
+        );
     return {
       content: [
         { type: "image" as const, data: buf.toString("base64"), mimeType: "image/png" },
