@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Predicate } from "@argus/shared";
-import { evalPredicate, levenshtein, nearestMatch, weakestTier, type EventBuffers } from "./verify";
+import { evalPredicate, levenshtein, nearestMatch, tailUrl, weakestTier, type EventBuffers } from "./verify";
 
 const buffers = {
   network: [
@@ -34,6 +34,66 @@ describe("verification helpers", () => {
       ])
     ).toBe("dom");
     expect(weakestTier([])).toBe("dom");
+  });
+
+  it("shortens request URLs without passing off a cut as the real URL", () => {
+    // The live silent500 verdict used to read "saw: POST s://argus-demo…".
+    expect(tailUrl("https://argus-demo.everyai-com.workers.dev/api/tasks?fail=1")).toBe(
+      "https://argus-demo.everyai-com.workers.dev/api/tasks"
+    );
+    const long = tailUrl(`https://example.com/${"a".repeat(100)}/api/tasks`);
+    expect(long.startsWith("…")).toBe(true);
+    expect(long.endsWith("/api/tasks")).toBe(true);
+    expect(long.length).toBe(80);
+  });
+
+  describe("evidence gaps (ring eviction / DO restart)", () => {
+    const gapped: EventBuffers = { ...buffers, lostThrough: { network: 50, console: 50 } };
+
+    it("refuses to call a window clean when its events may be missing", async () => {
+      const r = await evalPredicate(page, gapped, { kind: "console-clean", since: 10 } as Predicate);
+      expect(r.pass).toBe(false);
+      expect(r.evidence).toContain("unverifiable");
+      // A cursor past the gap sees everything — clean stands.
+      const fresh = await evalPredicate(page, gapped, { kind: "console-clean", since: 60 } as Predicate);
+      expect(fresh.pass).toBe(true);
+    });
+
+    it("keeps positive evidence but not absence or ceiling claims", async () => {
+      const seen = { kind: "network", urlIncludes: "/api/orders", minCount: 1, since: 0 } as Predicate;
+      expect((await evalPredicate(page, gapped, seen)).pass).toBe(true);
+      const capped = { ...seen, maxCount: 1 } as Predicate;
+      expect((await evalPredicate(page, gapped, capped)).pass).toBe(false);
+      const missing = { kind: "network", urlIncludes: "/api/never", minCount: 1, since: 0 } as Predicate;
+      const r = await evalPredicate(page, gapped, missing);
+      expect(r.pass).toBe(false);
+      expect(r.evidence).toContain("unverifiable");
+    });
+  });
+
+  it("fails `hidden` when the anchor cannot be evaluated at all", async () => {
+    // e.g. "Execution context was destroyed" mid-navigation — used to read as hidden ✓.
+    const broken = {
+      ...page,
+      getByTestId: () => ({
+        count: async () => {
+          throw new Error("Execution context was destroyed");
+        },
+      }),
+    } as any;
+    const r = await evalPredicate(broken, buffers, { kind: "hidden", anchor: { testid: "modal" } } as Predicate);
+    expect(r.pass).toBe(false);
+    expect(r.evidence).toContain("could not evaluate");
+  });
+
+  it("names what it saw when a network expectation fails", async () => {
+    const failed = await evalPredicate(
+      page,
+      { network: [{ seq: 1, method: "POST", url: "https://x/api/orders?retry=1", status: 500, failed: false }], console: [] },
+      { kind: "network", urlIncludes: "/api/orders", method: "POST", status: 201, minCount: 1, since: 0 } as Predicate
+    );
+    expect(failed.pass).toBe(false);
+    expect(failed.evidence).toContain("saw: POST https://x/api/orders → 500");
   });
 });
 

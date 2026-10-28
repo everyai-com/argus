@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "name": "persona-double-click-single-submit",
+  "startUrl": "http://localhost:5199/",
+  "viewport": "desktop",
+  "steps": [
+    {
+      "action": {
+        "action": "wait",
+        "ms": 1500
+      },
+      "expect": []
+    },
+    {
+      "action": {
+        "action": "fill",
+        "value": "Only once"
+      },
+      "anchor": {
+        "testid": "new-task"
+      },
+      "expect": []
+    },
+    {
+      "action": {
+        "action": "click",
+        "clickCount": 2
+      },
+      "anchor": {
+        "testid": "add-task"
+      },
+      "expect": []
+    },
+    {
+      "action": {
+        "action": "wait",
+        "ms": 1000
+      },
+      "expect": []
+    }
+  ],
+  "success": [
+    {
+      "kind": "network",
+      "urlIncludes": "/api/tasks",
+      "method": "POST",
+      "status": 201,
+      "minCount": 1,
+      "maxCount": 1,
+      "since": 0,
+      "cumulative": false
+    },
+    {
+      "kind": "console-clean",
+      "since": 0,
+      "cumulative": false,
+      "includeThirdParty": false
+    }
+  ],
+  "dynamic": []
+}

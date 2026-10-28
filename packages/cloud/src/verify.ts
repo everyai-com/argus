@@ -33,11 +33,31 @@ export function resolveAnchor(
   throw new Error("empty anchor");
 }
 
+/** Per buffer, the highest seq that may be missing (ring eviction / DO restart). */
+export interface LostThrough {
+  network?: number;
+  console?: number;
+  stream?: number;
+}
+
 export interface EventBuffers {
   network: NetworkEvent[];
   console: ConsoleEvent[];
   /** Optional: sessions that never observed a stream simply have none. */
   stream?: StreamEvent[];
+  lostThrough?: LostThrough;
+}
+
+/**
+ * Events in (since, lost] may be gone. A claim that rests on ABSENCE over that
+ * window ("no console errors", "at most N requests", "no matching request")
+ * cannot be verified — report that, never a pass.
+ */
+function gap(buffers: EventBuffers, which: keyof LostThrough, since: number): string | undefined {
+  const lost = buffers.lostThrough?.[which];
+  return lost !== undefined && lost > since
+    ? `unverifiable: ${which} events up to seq ${lost} were lost (buffer overflow or session restart) — observe for a fresh cursor and re-run the action`
+    : undefined;
 }
 
 export async function evalPredicate(
@@ -66,19 +86,22 @@ export async function evalPredicate(
       if (!countOk && onUrl.length > 0) {
         const seen = onUrl
           .slice(-3)
-          .map((e) => `${e.method} ${e.url.split("?")[0]!.slice(-48)} → ${e.failed && !e.status ? "failed" : e.status}`);
+          .map((e) => `${e.method} ${tailUrl(e.url)} → ${e.failed && !e.status ? "failed" : e.status}`);
         observed = ` — saw: ${seen.join("; ")}`;
       } else if (!countOk) {
         observed = ` — no request to "${p.urlIncludes}" was made at all`;
       }
 
-      return {
-        pass: countOk,
-        tier: "consequence",
-        evidence: `${matches.length} matching request(s) for "${p.urlIncludes}"${
-          p.status !== undefined ? ` status=${p.status}` : ""
-        } (wanted ≥${p.minCount}${p.maxCount !== undefined ? `, ≤${p.maxCount}` : ""})${observed}`,
-      };
+      const evidence = `${matches.length} matching request(s) for "${p.urlIncludes}"${
+        p.status !== undefined ? ` status=${p.status}` : ""
+      } (wanted ≥${p.minCount}${p.maxCount !== undefined ? `, ≤${p.maxCount}` : ""})${observed}`;
+      // ≥min matches is positive evidence a gap can't undo; a ceiling or a
+      // shortfall could both be artifacts of the missing events.
+      const lost = gap(buffers, "network", p.since);
+      if (lost && (!countOk || p.maxCount !== undefined)) {
+        return { pass: false, tier: "consequence", evidence: `${evidence} — ${lost}` };
+      }
+      return { pass: countOk, tier: "consequence", evidence };
     }
     case "console-clean": {
       const pageHost = (() => {
@@ -113,6 +136,11 @@ export async function evalPredicate(
               }
             })()
         );
+      const lost = gap(buffers, "console", p.since);
+      if (errors.length === 0 && lost) {
+        // "Clean" over a window we can't fully see would be a false green.
+        return { pass: false, tier: "consequence", evidence: lost };
+      }
       return {
         pass: errors.length === 0,
         tier: "consequence",
@@ -143,6 +171,10 @@ export async function evalPredicate(
         events.length >= p.minCount &&
         (p.maxCount === undefined || events.length <= p.maxCount);
       const saw = events.slice(-2).map((e) => `${e.stream}/${e.direction}`).join(", ");
+      const lost = gap(buffers, "stream", p.since);
+      if (lost && (!countOk || p.maxCount !== undefined)) {
+        return { pass: false, tier: "consequence", evidence: `${events.length} stream event(s) for "${p.urlIncludes}" — ${lost}` };
+      }
       return {
         pass: countOk,
         tier: "consequence",
@@ -166,10 +198,12 @@ export async function evalPredicate(
           evidence: `anchor via ${via}: ${count} match(es), visible=${visible}`,
         };
       } catch (err) {
+        // "We couldn't look" (bad selector, context destroyed mid-navigation) is
+        // not "we looked and it's gone" — passing `hidden` here was a false green.
         return {
-          pass: p.kind === "hidden",
+          pass: false,
           tier: "dom",
-          evidence: `anchor did not resolve (${String(err).slice(0, 80)})`,
+          evidence: `could not evaluate anchor (${String(err).slice(0, 80)})`,
         };
       }
     }
@@ -349,6 +383,16 @@ export async function evalPredicate(
       };
     }
   }
+}
+
+/**
+ * A request URL short enough for a one-line verdict. Keeps the tail (the path
+ * is what identifies the call) and marks any cut with "…" — a bare slice once
+ * reported "s://host/api" as if that were the real URL.
+ */
+export function tailUrl(url: string, max = 80): string {
+  const bare = url.split("?")[0]!;
+  return bare.length <= max ? bare : `…${bare.slice(-(max - 1))}`;
 }
 
 /** The weakest tier a set of results rests on — honesty about the evidence. */

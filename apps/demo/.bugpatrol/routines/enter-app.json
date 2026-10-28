@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "id": "enter-app",
+  "description": "Open the task board home page (no sign-in).",
+  "platform": "web",
+  "requires": [],
+  "steps": [
+    {
+      "kind": "open",
+      "url": "https://argus-demo.everyai-com.workers.dev",
+      "at": "https://argus-demo.everyai-com.workers.dev/|Argus Demo — Task Board|730d32f7a478"
+    }
+  ],
+  "expect": {
+    "elements": [
+      "new-task",
+      "add-task",
+      "New task title",
+      "Add"
+    ]
+  },
+  "createdAt": "2026-10-14T08:46:15.396Z",
+  "updatedAt": "2026-10-14T08:46:15.396Z",
+  "lastReplay": {
+    "at": "2026-10-14T08:58:59.792Z",
+    "ok": true,
+    "degraded": false
+  }
+}

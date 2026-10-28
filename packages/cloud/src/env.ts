@@ -18,6 +18,13 @@ export interface Env {
   /** How many browsers to keep WARM when idle (separate from the cap, so a big cap
    * doesn't leave a big pool of idle browsers billing). Default 12. */
   ARGUS_MAX_WARM?: string;
+  /**
+   * Durable Object location hint for new browser sessions (wnam, enam, weur,
+   * eeur, apac, oc, afr, me). Every Playwright call is a round-trip from the
+   * session DO to the remote Chromium, so the DO belongs next to the browsers,
+   * not next to whoever leased it.
+   */
+  ARGUS_SESSION_LOCATION?: string;
   /** GitHub App ID used to mint short-lived installation access tokens. */
   ARGUS_GITHUB_APP_ID?: string;
   /** GitHub App private key PEM. Store with `wrangler secret put`, never in vars. */

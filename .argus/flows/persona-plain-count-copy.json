@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "name": "persona-plain-count-copy",
+  "startUrl": "http://localhost:5199/",
+  "viewport": "desktop",
+  "steps": [
+    {
+      "action": {
+        "action": "wait",
+        "ms": 1500
+      },
+      "expect": []
+    }
+  ],
+  "success": [
+    {
+      "kind": "text",
+      "anchor": {
+        "testid": "task-count"
+      },
+      "includes": "2 tasks"
+    }
+  ],
+  "dynamic": []
+}

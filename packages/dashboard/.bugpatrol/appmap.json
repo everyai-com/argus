@@ -1,0 +1,221 @@
+{
+  "version": 1,
+  "platform": "web",
+  "screens": [
+    {
+      "name": "Run Detail",
+      "description": "Detail view for a single run: findings, screenshots, visual diffs, and flow suite results.",
+      "platform": "web",
+      "firstSeenAt": "2026-10-14T08:59:59.426Z",
+      "id": "run-detail",
+      "location": "https://argus-cloud.everyai-com.workers.dev/?run=92069727",
+      "screenKey": "https://argus-cloud.everyai-com.workers.dev/?run=92069727|Argus — browser verification console",
+      "routineId": "screen-run-detail",
+      "lastScreenshot": ".bugpatrol/runs/sessions/ses_20261014085839_88c7/012-run-detail.png",
+      "links": [
+        "fleet"
+      ],
+      "visits": 1,
+      "lastSeenAt": "2026-10-14T09:00:10.520Z",
+      "transitions": [
+        {
+          "to": "fleet",
+          "kind": "tap",
+          "via": "← Runs",
+          "steps": 1,
+          "count": 1,
+          "lastSeenAt": "2026-10-14T09:00:10.520Z"
+        }
+      ]
+    },
+    {
+      "name": "Fleet",
+      "description": "Shows latest verdict per project tile; the main landing screen after sign-in.",
+      "platform": "web",
+      "firstSeenAt": "2026-10-14T08:50:46.049Z",
+      "id": "fleet",
+      "location": "https://argus-cloud.everyai-com.workers.dev/",
+      "screenKey": "https://argus-cloud.everyai-com.workers.dev/|Argus — browser verification console",
+      "routineId": "screen-fleet",
+      "lastScreenshot": ".bugpatrol/runs/sessions/ses_20261014085000_6ac6/007-fleet.png",
+      "links": [
+        "run-detail",
+        "run-detail-buggy"
+      ],
+      "visits": 1,
+      "lastSeenAt": "2026-10-14T09:00:36.169Z",
+      "transitions": [
+        {
+          "to": "run-detail",
+          "kind": "tap",
+          "via": "demo-app — open latest run",
+          "steps": 3,
+          "count": 1,
+          "lastSeenAt": "2026-10-14T08:59:59.428Z"
+        },
+        {
+          "to": "run-detail-buggy",
+          "kind": "tap",
+          "via": "demo-buggy — open latest run",
+          "steps": 1,
+          "count": 1,
+          "lastSeenAt": "2026-10-14T09:00:36.169Z"
+        }
+      ]
+    },
+    {
+      "name": "Run Detail (demo-buggy, loaded)",
+      "description": "Fully loaded run detail showing a console-error finding, performance metrics, and a screenshot thumbnail.",
+      "platform": "web",
+      "firstSeenAt": "2026-10-14T09:00:36.111Z",
+      "id": "run-detail-buggy",
+      "location": "https://argus-cloud.everyai-com.workers.dev/?run=7a9f0448",
+      "screenKey": "https://argus-cloud.everyai-com.workers.dev/?run=7a9f0448|Argus — browser verification console",
+      "routineId": "screen-run-detail-buggy",
+      "lastScreenshot": ".bugpatrol/runs/sessions/ses_20261014085839_88c7/017-run-detail-buggy.png",
+      "links": [
+        "account"
+      ],
+      "visits": 1,
+      "lastSeenAt": "2026-10-14T09:00:57.645Z",
+      "transitions": [
+        {
+          "to": "account",
+          "kind": "open",
+          "via": "back",
+          "steps": 4,
+          "count": 1,
+          "lastSeenAt": "2026-10-14T09:00:57.645Z"
+        }
+      ]
+    },
+    {
+      "name": "Account",
+      "description": "Create account / sign in form for minting a tenant token; not used in this test since token is pasted directly.",
+      "platform": "web",
+      "firstSeenAt": "2026-10-14T08:59:06.808Z",
+      "id": "account",
+      "location": "https://argus-cloud.everyai-com.workers.dev/?tab=account",
+      "screenKey": "https://argus-cloud.everyai-com.workers.dev/?tab=account|Argus — browser verification console",
+      "routineId": "screen-account",
+      "lastScreenshot": ".bugpatrol/runs/sessions/ses_20261014085839_88c7/002-account.png",
+      "links": [
+        "fleet",
+        "runs-list"
+      ],
+      "visits": 1,
+      "lastSeenAt": "2026-10-14T09:01:12.777Z",
+      "transitions": [
+        {
+          "to": "fleet",
+          "kind": "tap",
+          "via": "Fleet 2",
+          "steps": 3,
+          "count": 1,
+          "lastSeenAt": "2026-10-14T08:59:24.420Z"
+        },
+        {
+          "to": "runs-list",
+          "kind": "tap",
+          "via": "Runs 3",
+          "steps": 1,
+          "count": 1,
+          "lastSeenAt": "2026-10-14T09:01:12.777Z"
+        }
+      ]
+    },
+    {
+      "name": "Runs",
+      "description": "Every verification run the tenant produced, newest first, with filter box.",
+      "platform": "web",
+      "firstSeenAt": "2026-10-14T09:01:12.759Z",
+      "id": "runs-list",
+      "location": "https://argus-cloud.everyai-com.workers.dev/?tab=runs",
+      "screenKey": "https://argus-cloud.everyai-com.workers.dev/?tab=runs|Argus — browser verification console",
+      "routineId": "screen-runs-list",
+      "lastScreenshot": ".bugpatrol/runs/sessions/ses_20261014085839_88c7/024-runs-list.png",
+      "links": [
+        "sessions"
+      ],
+      "visits": 1,
+      "lastSeenAt": "2026-10-14T09:02:02.214Z",
+      "transitions": [
+        {
+          "to": "sessions",
+          "kind": "tap",
+          "via": "Sessions",
+          "steps": 2,
+          "count": 1,
+          "lastSeenAt": "2026-10-14T09:02:02.214Z"
+        }
+      ]
+    },
+    {
+      "name": "Sessions",
+      "description": "Live cloud browser sessions with lease clocks; shows empty-state explanation when none are leased.",
+      "platform": "web",
+      "firstSeenAt": "2026-10-14T09:02:02.208Z",
+      "id": "sessions",
+      "location": "https://argus-cloud.everyai-com.workers.dev/?tab=sessions",
+      "screenKey": "https://argus-cloud.everyai-com.workers.dev/?tab=sessions|Argus — browser verification console",
+      "routineId": "screen-sessions",
+      "lastScreenshot": ".bugpatrol/runs/sessions/ses_20261014085839_88c7/032-sessions.png",
+      "links": [
+        "capacity"
+      ],
+      "visits": 1,
+      "lastSeenAt": "2026-10-14T09:02:12.021Z",
+      "transitions": [
+        {
+          "to": "capacity",
+          "kind": "tap",
+          "via": "Capacity",
+          "steps": 1,
+          "count": 1,
+          "lastSeenAt": "2026-10-14T09:02:12.021Z"
+        }
+      ]
+    },
+    {
+      "name": "GitHub",
+      "description": "Status of the GitHub PR integration and repository configuration JSON reference.",
+      "platform": "web",
+      "firstSeenAt": "2026-10-14T09:02:19.002Z",
+      "id": "github",
+      "location": "https://argus-cloud.everyai-com.workers.dev/?tab=github",
+      "screenKey": "https://argus-cloud.everyai-com.workers.dev/?tab=github|Argus — browser verification console",
+      "routineId": "screen-github",
+      "lastScreenshot": ".bugpatrol/runs/sessions/ses_20261014085839_88c7/036-github.png",
+      "links": [],
+      "visits": 1,
+      "lastSeenAt": "2026-10-14T09:02:19.002Z"
+    },
+    {
+      "name": "Capacity",
+      "description": "Fleet saturation gauges, launch queue stats, and per-tenant reserved floor table.",
+      "platform": "web",
+      "firstSeenAt": "2026-10-14T09:02:12.010Z",
+      "id": "capacity",
+      "location": "https://argus-cloud.everyai-com.workers.dev/?tab=capacity",
+      "screenKey": "https://argus-cloud.everyai-com.workers.dev/?tab=capacity|Argus — browser verification console",
+      "routineId": "screen-capacity",
+      "lastScreenshot": ".bugpatrol/runs/sessions/ses_20261014085839_88c7/034-capacity.png",
+      "links": [
+        "github"
+      ],
+      "visits": 1,
+      "lastSeenAt": "2026-10-14T09:02:19.008Z",
+      "transitions": [
+        {
+          "to": "github",
+          "kind": "tap",
+          "via": "GitHub",
+          "steps": 1,
+          "count": 1,
+          "lastSeenAt": "2026-10-14T09:02:19.008Z"
+        }
+      ]
+    }
+  ],
+  "updatedAt": "2026-10-14T09:02:19.008Z"
+}

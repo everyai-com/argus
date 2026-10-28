@@ -65,14 +65,12 @@ export function App(): React.ReactElement {
       apiGet<{ sessions: SessionRow[] }>(token, "/v1/sessions"),
       apiGet<{ projects: ProjectRow[] }>(token, "/v1/fleet"),
     ]).then(([r, s, f]) => {
-      if (r.status === "fulfilled") {
-        setRuns(r.value.runs);
-        setError(undefined);
-      } else {
-        setError(readApiError(r.reason));
-      }
+      if (r.status === "fulfilled") setRuns(r.value.runs);
       if (s.status === "fulfilled") setSessions(s.value.sessions);
       if (f.status === "fulfilled") setFleet(f.value.projects);
+      // Any failed call is shown — a timed-out fleet must not read as "no projects".
+      const failed = [r, s, f].find((x): x is PromiseRejectedResult => x.status === "rejected");
+      setError(failed ? readApiError(failed.reason) : undefined);
       setLoaded(true);
       setUpdatedAt(Date.now());
     });

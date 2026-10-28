@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "id": "screen-task-board",
+  "description": "Single page listing tasks with a counter and a field plus Add button to create tasks.",
+  "platform": "web",
+  "requires": [
+    "enter-app"
+  ],
+  "steps": [
+    {
+      "kind": "type",
+      "target": {
+        "testId": "new-task",
+        "role": "textbox",
+        "name": "New task title",
+        "text": "",
+        "selector": "[data-testid=\"new-task\"]",
+        "point": {
+          "x": 686.140625,
+          "y": 164.375
+        }
+      },
+      "value": "Normal task test",
+      "submit": false,
+      "at": "https://argus-demo.everyai-com.workers.dev/|Argus Demo — Task Board|730d32f7a478"
+    },
+    {
+      "kind": "tap",
+      "target": {
+        "testId": "add-task",
+        "role": "button",
+        "name": "Add",
+        "text": "Add",
+        "selector": "[data-testid=\"add-task\"]",
+        "point": {
+          "x": 1010.140625,
+          "y": 164.375
+        }
+      },
+      "at": "https://argus-demo.everyai-com.workers.dev/|Argus Demo — Task Board|730d32f7a478"
+    }
+  ],
+  "screenId": "task-board",
+  "expect": {
+    "elements": [
+      "new-task",
+      "add-task",
+      "New task title",
+      "Add"
+    ]
+  },
+  "createdAt": "2026-10-14T08:46:16.835Z",
+  "updatedAt": "2026-10-14T08:59:19.110Z"
+}

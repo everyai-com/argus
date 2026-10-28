@@ -54,11 +54,15 @@ cd packages/cloud
 wrangler secret put ARGUS_TOKEN            # required; the API fails closed without it
 wrangler deploy
 
-# in any project you want tested
-argus init https://argus-cloud.<you>.workers.dev <token>
-argus verify https://your-app.example.com  # smoke + audit + every saved flow
-argus test https://your-app.example.com    # deployed app
-argus test --local 3000                    # local app (auto quick-tunnel)
+# in any project you want tested — one command from absolute nothing
+argus verify https://your-app.example.com  # credentials inline on first run, suite
+                                           # generated when missing, verdict out
+argus                                      # or guided: wire + detect + verify, interactively
+argus verify 3000                          # bare port = tunnel localhost:3000 and verify it
+argus verify                               # no target = auto-detect the local dev server
+argus init                                 # wire harnesses only (agents, MCP)
+argus ci https://your-app.example.com      # write .github/workflows/argus.yml for PRs
+argus test https://your-app.example.com    # deployed app, smoke only
 argus audit https://your-app.example.com   # a11y + perf + links + visual
 ```
 
@@ -193,6 +197,13 @@ Say `/argus-explore <url>` in Claude Code — or run the `argus-explore` protoco
 from [skills/argus-explore/SKILL.md](skills/argus-explore/SKILL.md) in any other harness — to
 have the agent map the app, generate flows, and audit everything in parallel.
 
+For launch QA, `/argus-personas <url>` ([skills/argus-personas/SKILL.md](skills/argus-personas/SKILL.md))
+sends five first-time users through the app at once — impatient, skeptic, a phone
+on slow 3G (`network: "slow3g"` on the lease), a literal non-native reader, and a
+breaker who double-clicks (`clickCount: 2`), hits back mid-flow and goes
+`offline` — then ranks every friction moment by how many of them hit it, pins each
+as a red flow, and re-runs all five after the fix.
+
 ## Flows are your test suite
 
 `.argus/flows/*.json` is committed, human-readable, PR-reviewable:
@@ -209,7 +220,7 @@ have the agent map the app, generate flows, and audit everything in parallel.
                    "status": 201, "minCount": 1, "maxCount": 1, "since": 0 }] }
   ],
   "success": [
-    { "kind": "text", "anchor": { "testid": "task-count" }, "includes": "3 task(s)" },
+    { "kind": "text", "anchor": { "testid": "task-count" }, "includes": "3 tasks" },
     { "kind": "console-clean", "since": 0 }
   ]
 }

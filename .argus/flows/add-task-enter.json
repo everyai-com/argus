@@ -48,7 +48,7 @@
       "anchor": {
         "testid": "task-count"
       },
-      "includes": "3 task(s)"
+      "includes": "3 tasks"
     },
     {
       "kind": "console-clean",

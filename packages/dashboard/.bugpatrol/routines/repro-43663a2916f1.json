@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "id": "repro-43663a2916f1",
+  "description": "Reproduces: Fleet shows a loading skeleton forever when the API doesn't respond",
+  "platform": "web",
+  "requires": [
+    "enter-app"
+  ],
+  "steps": [],
+  "screenId": "fleet",
+  "bug": {
+    "lacks": "demo-app"
+  },
+  "createdAt": "2026-10-14T09:05:10.327Z",
+  "updatedAt": "2026-10-14T09:05:10.327Z"
+}

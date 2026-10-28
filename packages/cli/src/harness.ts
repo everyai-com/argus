@@ -18,6 +18,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ARGUS_CLOUD_API } from "@argus/shared";
 import { homedir } from "node:os";
 
 export interface McpStdioSpec {
@@ -62,13 +63,17 @@ export interface WireResult {
 
 export interface InitArgs {
   apiUrl: string;
-  token: string;
+  /** Missing when no positional/flag/env provided it — the CLI then prompts. */
+  token?: string;
   harnesses?: string;
   writeGlobal: boolean;
 }
 
+/** The hosted Argus API — `init`/`onboard`/config default here so most projects pass no URL. */
+export const DEFAULT_API = ARGUS_CLOUD_API;
+
 export const INIT_USAGE =
-  "argus init <api-url> <token> [--harness claude,cursor,vscode,gemini,agents,codex|all] [--write-global]";
+  "argus init [api-url] [token] [--api <url>] [--token <token>] [--harness claude,cursor,vscode,gemini,agents,codex|all] [--write-global]";
 
 /** Standing instructions, shared by every instruction-file writer. */
 export const VERIFICATION_MARKER = "## Verification (Argus)";
@@ -117,26 +122,66 @@ export function parseHarnessSelection(selection: string): HarnessId[] {
 }
 
 /**
+ * Split 0–2 credential positionals into an API URL and an optional token.
+ * Two positionals is the classic `<api-url> <token>` form; one positional is
+ * a URL when it looks like one, else a token; zero takes everything from
+ * flags and defaults. A missing token is NOT an error — callers fall back to
+ * ARGUS_TOKEN, saved config, then an interactive prompt.
+ */
+export function splitCredentials(
+  positional: string[],
+  flags: { api?: string; token?: string }
+): { ok: true; apiUrl: string; token?: string } | { ok: false; error: string } {
+  if (positional.length > 2) return { ok: false, error: `usage: ${INIT_USAGE}` };
+  const [first, second] = positional;
+  let apiUrl = flags.api ?? DEFAULT_API;
+  let token = flags.token;
+  if (first && second) {
+    apiUrl = first;
+    token = second;
+  } else if (first) {
+    if (/^https?:\/\//.test(first)) apiUrl = first;
+    else token = token ?? first;
+  }
+  return { ok: true, apiUrl, token };
+}
+
+/**
  * Parse `argus init` argv (everything after the command). Flags are consumed
- * with their value wherever they appear, so `argus init <api> <token>` works
- * with or without them.
+ * with their value wherever they appear. Bare `argus init` is valid: the API
+ * defaults to the hosted Argus cloud and the token resolves later (flag →
+ * env → saved config → prompt).
  */
 export function parseInitArgs(argv: string[]): { ok: true; args: InitArgs } | { ok: false; error: string } {
   const positional: string[] = [];
   let harnesses: string | undefined;
   let writeGlobal = false;
+  let apiFlag: string | undefined;
+  let tokenFlag: string | undefined;
 
+  const valued = (i: number): string | undefined => {
+    const value = argv[i];
+    return value && !value.startsWith("-") ? value : undefined;
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "--harness") {
-      const value = argv[++i];
-      if (!value || value.startsWith("-")) return { ok: false, error: `--harness needs a value — usage: ${INIT_USAGE}` };
+      const value = valued(++i);
+      if (!value) return { ok: false, error: `--harness needs a value — usage: ${INIT_USAGE}` };
       try {
         parseHarnessSelection(value);
       } catch (err) {
         return { ok: false, error: (err as Error).message };
       }
       harnesses = value;
+    } else if (arg === "--api") {
+      const value = valued(++i);
+      if (!value) return { ok: false, error: `--api needs a value — usage: ${INIT_USAGE}` };
+      apiFlag = value;
+    } else if (arg === "--token") {
+      const value = valued(++i);
+      if (!value) return { ok: false, error: `--token needs a value — usage: ${INIT_USAGE}` };
+      tokenFlag = value;
     } else if (arg === "--write-global") {
       writeGlobal = true;
     } else if (arg.startsWith("-")) {
@@ -146,9 +191,9 @@ export function parseInitArgs(argv: string[]): { ok: true; args: InitArgs } | { 
     }
   }
 
-  const [apiUrl, token, ...extra] = positional;
-  if (!apiUrl || !token || extra.length) return { ok: false, error: `usage: ${INIT_USAGE}` };
-  return { ok: true, args: { apiUrl, token, harnesses, writeGlobal } };
+  const creds = splitCredentials(positional, { api: apiFlag, token: tokenFlag });
+  if (!creds.ok) return creds;
+  return { ok: true, args: { apiUrl: creds.apiUrl, token: creds.token, harnesses, writeGlobal } };
 }
 
 // --- writers ----------------------------------------------------------------
