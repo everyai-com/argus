@@ -40,7 +40,7 @@ import {
   type NetworkProfile,
 } from "@argus/shared";
 import { evalPredicate, resolveAnchor, weakestTier, type LostThrough } from "../verify";
-import { actEffects, pageState, pendingFeedback } from "../detectors";
+import { actEffects, isInteraction, pageState, pendingFeedback } from "../detectors";
 import { applyNetwork, applyViewport, contextOptionsFor, settleBudget, slowRequest, trackInflight, waitForQuiet } from "../flow-utils";
 import { hostOf, loadAuthProfile, saveAuthProfile } from "../auth-store";
 import { throttledLaunch } from "../pool";
@@ -819,7 +819,9 @@ export class BrowserSession extends DurableObject<Env> {
     const tSettle = Date.now();
     // While the action's own request is still out: what is the user looking at?
     let pending: ActEffects["pending"];
-    if (watch) {
+    // Only a user who just clicked/pressed is waiting on the app; a reload's
+    // background fetches are not an unanswered action.
+    if (isInteraction(action)) {
       const inFlight = await slowRequest(page, tAction);
       if (inFlight > 0) pending = { inFlight, afterMs: Date.now() - tAction, ...(await pendingFeedback(page)) };
     }

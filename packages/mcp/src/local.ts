@@ -9,7 +9,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { Action, Anchor, NetworkEvent, ConsoleEvent, Predicate } from "@argus/shared";
-import { actEffects, pageState, pendingFeedback } from "../../cloud/src/detectors";
+import { actEffects, isInteraction, pageState, pendingFeedback } from "../../cloud/src/detectors";
 import { applyNetwork, applyViewport, settleBudget, slowRequest, trackInflight, waitForQuiet } from "../../cloud/src/flow-utils";
 import { evalPredicate, resolveAnchor, weakestTier } from "../../cloud/src/verify";
 
@@ -163,7 +163,7 @@ async function act(s: LocalSession, action: Action): Promise<unknown> {
   }
   const tSettle = Date.now();
   let pending;
-  if (watch) {
+  if (isInteraction(action)) {
     const inFlight = await slowRequest(page, tAction);
     if (inFlight > 0) pending = { inFlight, afterMs: Date.now() - tAction, ...(await pendingFeedback(page)) };
   }

@@ -110,8 +110,9 @@ dashboard hosting), `packages/cli`, `packages/mcp`, `packages/dashboard`,
   (`pageState` in `detectors.ts`) — never add per-signal evaluates: each is a
   ~180ms hop to the remote Chromium (measured; a DO location hint doesn't
   help — the hop is the Browser Rendering relay). The one exception is
-  conditional: `pendingFeedback` reads the page mid-request ONLY when the
-  act's own fetch/XHR has waited ≥150ms with NO response yet (`slowRequest`),
+  conditional: `pendingFeedback` reads the page mid-request ONLY for an
+  interaction (`isInteraction`: click, Enter/Space) whose own fetch/XHR has
+  waited ≥150ms with NO response yet (`slowRequest`),
   so fast acts pay nothing. Document loads (reload/goto) and answered
   requests are excluded — sampling them reported "no loading state" for
   pages that were simply done (both false positives came from the first real

@@ -351,6 +351,16 @@ export async function pendingFeedback(page: Page): Promise<{ feedback: boolean; 
     .catch(() => none);
 }
 
+/**
+ * Actions that should DO something visible: a click, or Enter/Space. Fill and
+ * select legitimately just store a value; navigation, hover, scroll and wait
+ * aren't a user waiting on the app. Decides both `silentAction` and whether a
+ * mid-request `pending` read means anything.
+ */
+export function isInteraction(action: Action): boolean {
+  return action.action === "click" || (action.action === "press" && /^(Enter| |Space)$/.test(action.key));
+}
+
 /** Everything one act observed — the input to `actEffects`, from either backend. */
 export interface ActWindow {
   action: Action;
@@ -392,9 +402,7 @@ export function actEffects(w: ActWindow): ActEffects {
   const newNetworkFailures = net.filter((n) => n.failed).length;
   const mutations = after.mutations;
   const nothingChanged = !navigated && mutations === 0 && !focusMoved;
-  // Interactions that should DO something. Fill/select legitimately just
-  // store a value; hover/scroll/wait aren't expected to change anything.
-  const interaction = action.action === "click" || (action.action === "press" && /^(Enter| |Space)$/.test(action.key));
+  const interaction = isInteraction(action);
   return {
     urlBefore: w.urlBefore,
     urlAfter: w.urlAfter,

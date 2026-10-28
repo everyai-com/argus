@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { crawlKey } from "./crawl";
-import { newIssues } from "./detectors";
+import { isInteraction, newIssues } from "./detectors";
 import { applyNetwork, applyViewport, contextOptionsFor, settleBudget, slowRequest, trackInflight, waitForQuiet } from "./flow-utils";
 
 describe("crawl scope", () => {
@@ -189,5 +189,15 @@ describe("phone preset", () => {
   });
   it("leaves mobile a plain small window, so its baselines still compare", () => {
     expect(contextOptionsFor("mobile")).toEqual({ viewport: { width: 375, height: 812 } });
+  });
+});
+
+describe("interactions", () => {
+  it("are clicks and Enter/Space — not navigation, typing or waiting", () => {
+    expect(isInteraction({ action: "click", ref: "e1" })).toBe(true);
+    expect(isInteraction({ action: "press", key: "Enter" })).toBe(true);
+    expect(isInteraction({ action: "press", key: "Tab" })).toBe(false);
+    expect(isInteraction({ action: "reload" })).toBe(false);
+    expect(isInteraction({ action: "fill", ref: "e1", value: "x" })).toBe(false);
   });
 });
