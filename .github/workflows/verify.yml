@@ -40,6 +40,15 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      # Executors that skip `uses:` actions (Flare) still get the pinned pnpm;
+      # on GitHub, pnpm/action-setup already put it on PATH and this is a no-op.
+      - name: Ensure pnpm
+        run: |
+          node --version
+          if ! command -v pnpm >/dev/null 2>&1; then
+            (corepack enable && corepack prepare pnpm@11.3.0 --activate) || npm install -g pnpm@11.3.0
+          fi
+          pnpm --version
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @argus/cli build
       # Non-zero exit on any failure — this is the gate. The printed verdict and
