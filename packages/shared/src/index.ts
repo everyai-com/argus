@@ -1333,3 +1333,82 @@ export function apiError(
       : {}),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Persona launch QA — five first-time users, one ranked list
+// ---------------------------------------------------------------------------
+
+export const EvidenceTierNameSchema = z.enum(["signal", "consequence", "dom", "visual"]);
+export const PersonaSeveritySchema = z.enum(["blocker", "major", "minor"]);
+
+export const PersonaMomentSchema = z.object({
+  kind: z.string().max(40),
+  where: z.string().max(500),
+  element: z.record(z.string(), z.string()).optional(),
+  symptom: z.string().max(80),
+  tried: z.string().max(2000).optional(),
+  expected: z.string().max(2000).optional(),
+  saw: z.string().max(4000).optional(),
+  severity: z.string().max(20),
+  evidence: z
+    .object({
+      screenshot: z.string().max(500).optional(),
+      tier: z.string().max(20).optional(),
+      effects: z.record(z.string(), z.unknown()).optional(),
+    })
+    .optional(),
+});
+export type PersonaMoment = z.infer<typeof PersonaMomentSchema>;
+
+export const PersonaReportSchema = z.object({
+  persona: z.string().max(40),
+  reachedSuccess: z.boolean(),
+  moments: z.array(PersonaMomentSchema).max(100),
+  coverage: z.unknown().optional(),
+});
+export type PersonaReport = z.infer<typeof PersonaReportSchema>;
+
+/** One issue after the merge: a page + element + symptom, with every user who hit it. */
+export const PersonaIssueSchema = z.object({
+  key: z.string().max(700),
+  symptom: z.string().max(80),
+  where: z.string().max(500),
+  element: z.string().max(300),
+  personas: z.array(z.string().max(40)).max(10),
+  severity: z.string().max(20),
+  /** The strongest sighting's tier, each sighting already checked against its evidence. */
+  tier: EvidenceTierNameSchema,
+  saw: z.array(z.string().max(4100)).max(20),
+  expected: z.array(z.string().max(2100)).max(20).default([]),
+  tried: z.array(z.string().max(2100)).max(20).default([]),
+  screenshots: z.array(z.string().max(500)).max(30),
+});
+export type PersonaIssue = z.infer<typeof PersonaIssueSchema>;
+
+export const PersonaRunUploadSchema = z.object({
+  url: HttpUrlSchema,
+  goal: z.string().min(1).max(300),
+  reports: z.array(PersonaReportSchema).max(10),
+  issues: z.array(PersonaIssueSchema).max(200),
+  project: z.string().max(60).optional(),
+});
+export type PersonaRunUpload = z.infer<typeof PersonaRunUploadSchema>;
+
+export const PersonaRunSchema = PersonaRunUploadSchema.extend({
+  id: z.string(),
+  createdAt: z.string(),
+});
+export type PersonaRun = z.infer<typeof PersonaRunSchema>;
+
+/** The list view: enough to draw a row without fetching every run. */
+export const PersonaRunSummarySchema = z.object({
+  id: z.string(),
+  url: z.string(),
+  goal: z.string(),
+  createdAt: z.string(),
+  reached: z.number().int(),
+  personas: z.number().int(),
+  issues: z.number().int(),
+  worst: z.string().optional(),
+});
+export type PersonaRunSummary = z.infer<typeof PersonaRunSummarySchema>;

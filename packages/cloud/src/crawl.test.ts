@@ -158,6 +158,17 @@ describe("mid-request sampling", () => {
     expect(await slowRequest(page, since, 100)).toBe(1);
   });
 
+  it("ignores document loads and requests that already have their response", async () => {
+    const { page, emit } = fakePage();
+    trackInflight(page);
+    const since = Date.now();
+    emit("request", { resourceType: () => "document" });
+    const answered = req();
+    emit("request", answered);
+    emit("response", { request: () => answered });
+    expect(await slowRequest(page, since, 50)).toBe(0);
+  });
+
   it("stays out of the way when the request finishes fast or never starts", async () => {
     const { page, emit } = fakePage();
     trackInflight(page);

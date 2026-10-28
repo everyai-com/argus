@@ -10,6 +10,7 @@
  * global ARGUS_TOKEN is the admin tenant). Tenant lookups are hashed and
  * cached in-isolate so the hot path doesn't hit the Coordinator every request.
  */
+import { getPersonaRun, listPersonaRuns, savePersonaRun, summarize } from "./personas";
 import { Hono } from "hono";
 import { z } from "zod";
 import {
@@ -25,6 +26,7 @@ import {
   TriageUpdateSchema,
   UpdateTenantRequestSchema,
   type SessionInfo,
+  PersonaRunUploadSchema,
 } from "@argus/shared";
 import type { Env } from "./env";
 import { deleteAuthProfile, listAuthProfiles } from "./auth-store";
@@ -610,6 +612,22 @@ app.post("/v1/findings/triage", async (c) => {
   const rec = await setTriage(c.env, c.get("tenant").id, hostKeyOf(host), fingerprint, status, reason);
   if (!rec) return c.json(apiError("not_found", `no finding ${fingerprint} on ${hostKeyOf(host)}`), 404);
   return c.json({ fingerprint, ...rec });
+});
+
+// --- persona launch QA (argus personas uploads, dashboard reads) ------------
+
+app.post("/v1/personas", async (c) => {
+  const parsed = PersonaRunUploadSchema.safeParse(await c.req.json().catch(() => undefined));
+  if (!parsed.success) return c.json(apiError("bad_request", parsed.error.issues[0]?.message ?? "invalid persona run"), 400);
+  const run = await savePersonaRun(c.env, c.get("tenant").id, parsed.data);
+  return c.json(summarize(run), 201);
+});
+
+app.get("/v1/personas", async (c) => c.json({ runs: await listPersonaRuns(c.env, c.get("tenant").id) }));
+
+app.get("/v1/personas/:id", async (c) => {
+  const run = await getPersonaRun(c.env, c.get("tenant").id, c.req.param("id"));
+  return run ? c.json(run) : c.json(apiError("not_found"), 404);
 });
 
 // --- run history (powers the dashboard, tenant-scoped) ----------------------

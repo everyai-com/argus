@@ -116,6 +116,9 @@ importers:
         specifier: ^19.3.0
         version: 19.3.0(react@19.3.0)
     devDependencies:
+      '@argus/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@types/react':
         specifier: ^19.3.0
         version: 19.3.0

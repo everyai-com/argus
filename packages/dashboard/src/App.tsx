@@ -7,15 +7,17 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { AccountView } from "./Account";
 import { GitHubView } from "./Platform";
 import { CapacityView, SessionsView } from "./Ops";
+import { LaunchQAView } from "./Personas";
 import { FleetView, RunDetail, RunsView } from "./Runs";
 import { apiGet, useCapacity, useToken, type ProjectRow, type RunRow, type SessionRow } from "./api";
 import { Empty, Mark, Meter, Skeleton, Sparkbars, timeAgo, until, useNow, Verdict } from "./ui";
 
-type Tab = "fleet" | "runs" | "sessions" | "capacity" | "github" | "account";
+type Tab = "fleet" | "runs" | "qa" | "sessions" | "capacity" | "github" | "account";
 
 const TABS: Array<{ id: Tab; label: string; group: string; blurb: string }> = [
   { id: "fleet", label: "Fleet", group: "Observe", blurb: "Latest verdict per project — the board you scan first." },
   { id: "runs", label: "Runs", group: "Observe", blurb: "Every verification run this tenant has produced, newest first." },
+  { id: "qa", label: "Launch QA", group: "Observe", blurb: "Five first-time users per run — who got stuck, where, ranked by how many hit it." },
   { id: "sessions", label: "Sessions", group: "Observe", blurb: "Live cloud browsers, their lease clocks, and how to free a slot." },
   { id: "capacity", label: "Capacity", group: "Operate", blurb: "Saturation, launch queue, and per-tenant reserved floors." },
   { id: "github", label: "GitHub", group: "Operate", blurb: "Verification posted onto pull requests." },
@@ -169,6 +171,7 @@ export function App(): React.ReactElement {
           </div>
         </Empty>
       );
+    if (tab === "qa" && !selected) return <LaunchQAView token={token} now={now} />;
     if (selected) return <RunDetail token={token} runId={selected} onBack={() => setSelected(undefined)} />;
     if (!loaded) return <Skeleton rows={4} />;
     if (tab === "capacity")

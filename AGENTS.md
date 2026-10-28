@@ -111,8 +111,11 @@ dashboard hosting), `packages/cli`, `packages/mcp`, `packages/dashboard`,
   ~180ms hop to the remote Chromium (measured; a DO location hint doesn't
   help — the hop is the Browser Rendering relay). The one exception is
   conditional: `pendingFeedback` reads the page mid-request ONLY when the
-  act's own request stayed pending ≥150ms (`slowRequest`), so fast acts pay
-  nothing. Settling waits for the requests the act STARTED (`waitForQuiet`),
+  act's own fetch/XHR has waited ≥150ms with NO response yet (`slowRequest`),
+  so fast acts pay nothing. Document loads (reload/goto) and answered
+  requests are excluded — sampling them reported "no loading state" for
+  pages that were simply done (both false positives came from the first real
+  `argus personas` run). Settling waits for the requests the act STARTED (`waitForQuiet`),
   never `waitForLoadState("networkidle")` — that resolves at once on a page
   that was idle before, which read slow saves as dead buttons.
 - Network emulation (`network` on a lease, the `network` action) rides ONE

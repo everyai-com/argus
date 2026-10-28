@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "argus-cloud-local",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@argus/cloud", "exec", "wrangler", "dev", "--port", "8787", "--local"],
+      "port": 8787
+    }
+  ]
+}

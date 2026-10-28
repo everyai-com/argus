@@ -82,21 +82,29 @@ export function settleBudget(baseMs: number, network: NetworkProfile | undefined
 // ("networkidle")` is a lifecycle event of the DOCUMENT: once the page has been
 // idle it resolves at once, so it never waited for a fetch an action started —
 // a slow POST read as `silentAction` (a dead button that wasn't dead).
-const inflight = new WeakMap<Page, { pending: Map<unknown, number>; last: number }>();
+const inflight = new WeakMap<
+  Page,
+  { pending: Map<unknown, number>; waiting: Map<unknown, { at: number; type: string }>; last: number }
+>();
 
 /** Start counting requests on a page. Call before the first action. */
 export function trackInflight(page: Page): void {
   if (inflight.has(page)) return;
-  const s = { pending: new Map<unknown, number>(), last: 0 };
+  const s = { pending: new Map<unknown, number>(), waiting: new Map<unknown, { at: number; type: string }>(), last: 0 };
   inflight.set(page, s);
   page.on("request", (req) => {
     // Streams never finish; counting them would stall every settle to its timeout.
     const type = req.resourceType();
     if (type === "eventsource" || type === "websocket") return;
     s.pending.set(req, Date.now());
+    s.waiting.set(req, { at: Date.now(), type });
     s.last = Date.now();
   });
+  // A response means the app has its answer — from here the UI may already be
+  // done even though the body (and "requestfinished") is still arriving.
+  page.on("response", (res) => void s.waiting.delete(res.request()));
   const done = (req: unknown) => {
+    s.waiting.delete(req);
     if (s.pending.delete(req)) s.last = Date.now();
   };
   page.on("requestfinished", done);
@@ -124,10 +132,13 @@ export async function waitForQuiet(page: Page, since: number, timeoutMs: number,
 }
 
 /**
- * Has a request the action started been pending for `slowMs`? Polls briefly
- * (a click's fetch reaches us a few ms after the click returns) and returns
- * how many of the action's requests are in flight at that moment — 0 when
- * nothing started, or everything finished fast enough to need no feedback.
+ * Is the app still WAITING on a fetch/XHR the action started, `slowMs` after
+ * it went out? Polls briefly (a click's fetch reaches us a few ms after the
+ * click returns) and returns how many are waiting — 0 when nothing started or
+ * everything answered fast. Only the app's own data requests count: a
+ * document load shows the browser's own progress, and a request that already
+ * has its response may have a UI that is (rightly) back to normal — sampling
+ * then reported "no feedback" for pages that had simply finished.
  */
 export async function slowRequest(page: Page, since: number, slowMs = 150, windowMs = 600): Promise<number> {
   const s = inflight.get(page);
@@ -137,10 +148,10 @@ export async function slowRequest(page: Page, since: number, slowMs = 150, windo
     const now = Date.now();
     let pending = 0;
     let slow = false;
-    for (const t of s.pending.values()) {
-      if (t < since) continue;
+    for (const w of s.waiting.values()) {
+      if (w.at < since || (w.type !== "fetch" && w.type !== "xhr")) continue;
       pending++;
-      if (now - t >= slowMs) slow = true;
+      if (now - w.at >= slowMs) slow = true;
     }
     if (slow) return pending;
     if (pending === 0 && now - start >= 100) return 0;

@@ -7,39 +7,15 @@
  * claimed evidence tier is checked against the evidence it cites — a user
  * cannot promote a DOM read to `signal` by saying so.
  */
+import type { PersonaIssue, PersonaMoment, PersonaReport } from "@argus/shared";
 
 export type Tier = "signal" | "consequence" | "dom" | "visual";
 const TIER_RANK: Record<Tier, number> = { signal: 3, consequence: 2, dom: 1, visual: 0 };
 const SEVERITY_RANK: Record<string, number> = { blocker: 2, major: 1, minor: 0 };
 
-export interface Moment {
-  kind: string;
-  where: string;
-  element?: Record<string, string>;
-  symptom: string;
-  saw?: string;
-  severity: string;
-  evidence?: { screenshot?: string; tier?: string; effects?: Record<string, unknown> };
-}
-
-export interface PersonaReport {
-  persona: string;
-  reachedSuccess: boolean;
-  moments: Moment[];
-  coverage?: unknown;
-}
-
-export interface RankedIssue {
-  key: string;
-  symptom: string;
-  where: string;
-  element: string;
-  personas: string[];
-  severity: string;
-  tier: Tier;
-  saw: string[];
-  screenshots: string[];
-}
+export type Moment = PersonaMoment;
+export type { PersonaReport };
+export type RankedIssue = PersonaIssue;
 
 /** The symptom vocabulary: same problem, same word — or it can't be counted across users. */
 export const SYMPTOMS = [
@@ -121,7 +97,7 @@ export function personaPrompt(p: (typeof PERSONAS)[number], url: string, goal: s
     "Evidence tier = the WEAKEST it rests on: signal ONLY with an app-declared signal event; request counts/statuses = consequence; DOM/text/bounds/silentAction = dom; screenshot-only = visual.",
     `symptom must be one of: ${SYMPTOMS.join(", ")} — invent a new kebab slug only if none fits.`,
     "Never fabricate a moment. Always argus_release.",
-    'Reply with ONE JSON object and nothing else: {"persona","reachedSuccess","moments":[{"kind":"stuck|confused|annoyed|broken","where":"/path","element":{"testid"|"role"+"name"|"text":"..."},"symptom":"kebab-slug","saw":"...","severity":"blocker|major|minor","evidence":{"screenshot":"<key>","tier":"...","effects":{...}}}],"coverage":"..."}',
+    'Reply with ONE JSON object and nothing else: {"persona","reachedSuccess","moments":[{"kind":"stuck|confused|annoyed|broken","where":"/path","element":{"testid"|"role"+"name"|"text":"..."},"symptom":"kebab-slug","tried":"...","expected":"...","saw":"...","severity":"blocker|major|minor","evidence":{"screenshot":"<key>","tier":"...","effects":{...}}}],"coverage":"..."}',
   ].join("\n");
 }
 
@@ -195,6 +171,8 @@ export function mergeReports(reports: PersonaReport[]): RankedIssue[] {
         severity: m.severity,
         tier,
         saw: [],
+        expected: [],
+        tried: [],
         screenshots: [],
       };
       if (!issue.personas.includes(r.persona)) issue.personas.push(r.persona);
@@ -202,6 +180,8 @@ export function mergeReports(reports: PersonaReport[]): RankedIssue[] {
       // The issue is as strong as its STRONGEST independent sighting, each already checked.
       if (TIER_RANK[tier] > TIER_RANK[issue.tier]) issue.tier = tier;
       if (m.saw) issue.saw.push(`${r.persona}: ${m.saw}`);
+      if (m.expected) issue.expected.push(`${r.persona}: ${m.expected}`);
+      if (m.tried) issue.tried.push(`${r.persona}: ${m.tried}`);
       if (m.evidence?.screenshot) issue.screenshots.push(m.evidence.screenshot);
       byKey.set(key, issue);
     }

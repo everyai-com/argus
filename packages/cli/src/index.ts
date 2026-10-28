@@ -1694,7 +1694,7 @@ ${verifyStep}
         console.error('argus personas <url> --goal "add my first task" — the goal is the one sentence every user gets');
         process.exit(2);
       }
-      await ensureConfigured(cfg);
+      const live = await ensureConfigured(cfg);
       // The project's MCP config (argus init) gives the agent the argus tools.
       const agent = flag("--agent") ?? "claude -p --allowedTools mcp__argus";
       console.log(dim(`five first-time users → ${url} (goal: "${goal}") via \`${agent}\` ...`));
@@ -1716,6 +1716,12 @@ ${verifyStep}
       writeFileSync(join(dir, `${stamp}.json`), JSON.stringify({ url, goal, reports, issues }, null, 2) + "\n");
       console.log("\n" + md);
       console.log(dim(`saved .argus/personas/${stamp}.{md,json}`));
+      try {
+        const up = await api<{ id: string }>(live, "POST", "/v1/personas", { url, goal, reports, issues, project: basename(process.cwd()) });
+        console.log(`${green("✔")} dashboard: ${live.api}/?tab=qa ${dim(`(run ${up.id})`)}`);
+      } catch (err) {
+        console.log(yellow(`  ! not uploaded to the dashboard: ${String(err).slice(0, 160)}`));
+      }
       // 4: a user never reported (not tested) · 1: a user failed or a blocker/major issue · 0: clean.
       const code =
         reports.length < PERSONAS.length
