@@ -45,7 +45,7 @@ interface TriageDoc {
 export const CLEAN_VISITS_TO_CLOSE = 3;
 const MAX_RECORDS = 2_000;
 
-const VIEWPORT_SCOPED = new Set(["layout", "content", "perf", "visual", "responsive"]);
+const VIEWPORT_SCOPED = new Set(["layout", "content", "perf", "visual", "responsive", "design", "state"]);
 
 /** Ids, hashes, numbers → placeholders, so `/orders/8812` and `/orders/9917` are one path. */
 export function normalizePath(pathname: string): string {

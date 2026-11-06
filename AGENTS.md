@@ -10,7 +10,7 @@ Cloud verification platform. Monorepo: `packages/shared` (zod wire contract —
 every cross-boundary schema lives here, both sides import it), `packages/cloud`
 (CF Worker: Hono API + BrowserSession/Coordinator DOs + replay/audit engines +
 dashboard hosting), `packages/cli`, `packages/mcp`, `packages/dashboard`,
-`apps/demo` (dogfood app, `?bug=silent500|deadbutton|wrongstate|overflow|consoleerror|slowreq`).
+`apps/demo` (dogfood app, `?bug=silent500|deadbutton|wrongstate|overflow|consoleerror|slowreq|nofeedback|nopersist|impossiblestate|ignoredfilter`).
 
 ## Commands
 
@@ -128,6 +128,18 @@ dashboard hosting), `packages/cli`, `packages/mcp`, `packages/dashboard`,
   that wiped storage and read as the app losing data.
 - `persists` on a flow re-checks state predicates after one reload
   (`not_persisted` verdict) — the optimistic-UI-never-saved class.
+- Generated list cases must DISCRIMINATE (`docs/discriminating-cases.md`): the
+  search value splits the rows (precondition `some`+`someNot`), success is
+  `rows.every` + `fewerThan` a run-local `snapshot` — no row data in the file.
+  Zero rows never passes a `rows` claim (only `maxCount: 0` claims emptiness).
+  Data drift is `precondition_unmet` (untested). A generated case joins the
+  suite only after passing twice; the same failure twice goes to
+  `.argus/candidates/`, never into the suite.
+- `state/*` detectors (impossible UI states: loading+error, success+error,
+  empty beside rows) live in the ONE `pageState` read, so every act, audit and
+  crawl gets them; both halves must share a region. `design/*` (Appllama's
+  slop pre-flight, `design.ts`) is an audit check, `minor`/`info` only — taste
+  never blocks. A failed design read is `design/unmeasured`, never silence.
 - Electron sessions (`argus_lease { electron }`, ids `local-*`) run in the
   stdio MCP server with the cloud's own engine modules — keep
   `detectors.ts`, `flow-utils.ts` and `verify.ts` free of Worker-only

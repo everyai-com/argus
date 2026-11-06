@@ -60,10 +60,72 @@ function gap(buffers: EventBuffers, which: keyof LostThrough, since: number): st
     : undefined;
 }
 
+/** Row texts a flow step recorded by name (`snapshot`), for this run only. */
+export type Snapshots = ReadonlyMap<string, string[]>;
+
+/** Row text as compared: whitespace collapsed, so a re-render's layout can't fake a difference. */
+export function rowText(raw: string): string {
+  return raw.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * The `rows` verdict over texts already read — pure so it's unit-testable
+ * without a browser. Every claim over an empty set is unverifiable (an ignored
+ * filter whose anchor drifted would otherwise pass `every` vacuously); only
+ * `maxCount: 0` may claim emptiness.
+ */
+export function judgeRows(
+  texts: string[],
+  p: Extract<Predicate, { kind: "rows" }>,
+  snapshots: Snapshots | undefined
+): PredicateResult {
+  const rows = texts.map(rowText);
+  const fail = (why: string): PredicateResult => ({ pass: false, tier: "dom", evidence: `${rows.length} row(s) — ${why}` });
+
+  if (rows.length === 0 && p.maxCount !== 0) {
+    return { pass: false, tier: "dom", evidence: "unverifiable: no rows matched the item anchor — a claim over an empty set proves nothing" };
+  }
+  if (p.minCount !== undefined && rows.length < p.minCount) return fail(`wanted ≥${p.minCount}`);
+  if (p.maxCount !== undefined && rows.length > p.maxCount) return fail(`wanted ≤${p.maxCount}`);
+
+  if (p.every) {
+    const want = p.every.includes.toLowerCase();
+    const stray = rows.find((r) => !r.toLowerCase().includes(want));
+    if (stray !== undefined) return fail(`row without "${p.every.includes}": "${stray.slice(0, 80)}"`);
+  }
+  if (p.none) {
+    const want = p.none.includes.toLowerCase();
+    const hit = rows.find((r) => r.toLowerCase().includes(want));
+    if (hit !== undefined) return fail(`row with "${p.none.includes}": "${hit.slice(0, 80)}"`);
+  }
+  if (p.some && !rows.some((r) => r.toLowerCase().includes(p.some!.includes.toLowerCase()))) {
+    return fail(`no row includes "${p.some.includes}"`);
+  }
+  if (p.someNot && rows.every((r) => r.toLowerCase().includes(p.someNot!.includes.toLowerCase()))) {
+    return fail(`every row includes "${p.someNot.includes}"`);
+  }
+
+  const snap = (name: string): string[] | undefined => snapshots?.get(name)?.map(rowText);
+  if (p.fewerThan !== undefined) {
+    const before = snap(p.fewerThan);
+    if (!before) return fail(`unverifiable: no snapshot "${p.fewerThan}" was taken in this run`);
+    if (rows.length >= before.length) return fail(`not fewer than snapshot "${p.fewerThan}" (${before.length}) — nothing was removed`);
+  }
+  if (p.notSubsetOf !== undefined) {
+    const before = snap(p.notSubsetOf);
+    if (!before) return fail(`unverifiable: no snapshot "${p.notSubsetOf}" was taken in this run`);
+    const seen = new Set(before);
+    if (rows.every((r) => seen.has(r))) return fail(`every row was already in snapshot "${p.notSubsetOf}" — nothing new`);
+  }
+
+  return { pass: true, tier: "dom", evidence: `${rows.length} row(s) hold` };
+}
+
 export async function evalPredicate(
   page: Page,
   buffers: EventBuffers,
-  p: Predicate
+  p: Predicate,
+  snapshots?: Snapshots
 ): Promise<PredicateResult> {
   switch (p.kind) {
     case "network": {
@@ -222,6 +284,14 @@ export async function evalPredicate(
         return { pass: false, tier: "dom", evidence: String(err).slice(0, 120) };
       }
     }
+    case "rows": {
+      try {
+        const { locator } = resolveAnchor(page, p.item);
+        return judgeRows(await locator.allInnerTexts(), p, snapshots);
+      } catch (err) {
+        return { pass: false, tier: "dom", evidence: `could not read rows (${String(err).slice(0, 80)})` };
+      }
+    }
     case "signal": {
       // Tier-1: read the app's own declarations. Absent SDK is reported as
       // such rather than as a failed assertion — "we couldn't look" and "we
@@ -363,7 +433,7 @@ export async function evalPredicate(
     case "allOf":
     case "anyOf": {
       const results = await Promise.all(
-        p.predicates.map((child) => evalPredicate(page, buffers, child))
+        p.predicates.map((child) => evalPredicate(page, buffers, child, snapshots))
       );
       const passing = results.filter((r) => r.pass);
       const pass = p.kind === "allOf" ? passing.length === results.length : passing.length > 0;

@@ -11,6 +11,7 @@ import { contextOptionsFor } from "./flow-utils";
 import { acquirePooledBrowser, releasePooledBrowser } from "./pool";
 import type { Browser } from "@cloudflare/playwright";
 import { detectorFindings, probeLayout } from "./detectors";
+import { designFindings, judgeDesign, probeDesign } from "./design";
 import {
   blockNoise,
   freezeScript,
@@ -127,6 +128,7 @@ export async function runAudit(env: Env, req: AuditRequest, tenantId?: string): 
   const axeSource = req.checks.includes("a11y") ? await getAxeSource(env) : undefined;
   const seenA11yIds = new Set<string>();
   const layoutDone = new Set<ViewportName>();
+  const designDone = new Set<ViewportName>();
   // One instant for every capture in this run, so all viewports agree.
   const clockAt = req.freezeClock ? Date.parse(req.freezeClock) : Date.now();
   let pageLinks: string[] = [];
@@ -306,6 +308,27 @@ export async function runAudit(env: Env, req: AuditRequest, tenantId?: string): 
           layoutDone.add(viewport);
           const hits = await probeLayout(page, { tapTargets: viewport === "mobile" });
           findings.push(...detectorFindings(hits, viewport, fid));
+        }
+
+        // ---- design craft (advisory: minor/info only, once per viewport) ---
+        if (req.checks.includes("design") && !designDone.has(viewport)) {
+          designDone.add(viewport);
+          const sample = await probeDesign(page);
+          if (sample) findings.push(...designFindings(judgeDesign(sample), viewport, fid));
+          // "Couldn't look" must never read as "looked and found nothing".
+          else
+            findings.push({
+              id: fid(),
+              severity: "info",
+              category: "design",
+              rule: "design/unmeasured",
+              summary: `Design checks could not read the page at ${viewport}`,
+              evidence: { viewport },
+              decision: {
+                whatChanged: "the in-page design read failed (navigation mid-read, or a CSP/sandbox blocked it)",
+                nextAction: "re-run the audit; if it repeats, the design rules were not checked on this screen",
+              },
+            });
         }
 
         // ---- screenshot (evidence) + visual diff (stable capture) ---------
@@ -548,8 +571,11 @@ export async function runAudit(env: Env, req: AuditRequest, tenantId?: string): 
   // ---- triage memory: identity, dismissals, regressions ------------------
   const ran = new Set(["console", "network", "load", "responsive"]);
   if (axeSource) ran.add("a11y");
-  for (const c of ["perf", "visual", "layout"] as const) if (req.checks.includes(c)) ran.add(c);
-  if (req.checks.includes("layout")) ran.add("content");
+  for (const c of ["perf", "visual", "layout", "design"] as const) if (req.checks.includes(c)) ran.add(c);
+  if (req.checks.includes("layout")) {
+    ran.add("content");
+    ran.add("state");
+  }
   if (req.checks.includes("links")) ran.add("link");
   const triaged = loaded
     ? await applyTriage(env, owner, findings, { pageUrl: req.url, ranFamilies: ran, viewports: req.viewports })

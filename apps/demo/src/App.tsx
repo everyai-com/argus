@@ -10,6 +10,10 @@
  *   wrongstate   — the counter shows a hardcoded number, not the real count
  *   nofeedback   — Add shows nothing while the save is in flight (no disabled/busy state)
  *   nopersist    — tasks are never written to storage, so a reload loses them
+ *   impossiblestate — the load's error path forgets to clear `loading`, and the
+ *                  empty-state flag is set once and never re-derived: "Loading…"
+ *                  shows beside an error, and "No tasks yet" beside real tasks
+ *   ignoredfilter — the "Filter tasks" box updates its text but never filters the list
  */
 import React, { useEffect, useRef, useState } from "react";
 import { registerStore, signal } from "@argus/sdk";
@@ -62,9 +66,12 @@ function saveTasks(tasks: string[]): void {
 export function App(): React.ReactElement {
   const [tasks, setTasks] = useState<string[]>([]);
   const [title, setTitle] = useState("");
+  const [filter, setFilter] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Injected (impossiblestate): a separate flag instead of `tasks.length === 0`.
+  const [isEmpty] = useState(bug === "impossiblestate");
   // A ref, not state: both clicks of a double-click run before React
   // re-renders, so a `saving` state check would let the second one through.
   const inFlight = useRef(false);
@@ -78,6 +85,11 @@ export function App(): React.ReactElement {
     fetch("/api/tasks").catch(() => {});
     const t = setTimeout(() => {
       setTasks(loadTasks());
+      if (bug === "impossiblestate") {
+        // Injected: the error branch sets `error` and never clears `loading`.
+        setError("Couldn't refresh your tasks. Try again.");
+        return;
+      }
       setLoading(false);
     }, delay);
     return () => clearTimeout(t);
@@ -126,6 +138,9 @@ export function App(): React.ReactElement {
   registerStore("draft", () => title);
 
   const count = bug === "wrongstate" ? 42 : tasks.length;
+  const needle = filter.trim().toLowerCase();
+  // Injected (ignoredfilter): the query is kept but never applied.
+  const shown = bug === "ignoredfilter" || !needle ? tasks : tasks.filter((t) => t.toLowerCase().includes(needle));
   const busy = saving && bug !== "nofeedback";
 
   return (
@@ -179,8 +194,22 @@ export function App(): React.ReactElement {
           {error}
         </p>
       )}
+      {(bug === "impossiblestate" ? isEmpty : !loading && tasks.length === 0) && (
+        <p data-testid="empty-state" style={{ color: "#535b6b" }}>
+          No tasks yet. Add your first one above.
+        </p>
+      )}
+      <input
+        type="search"
+        data-testid="task-filter"
+        aria-label="Filter tasks"
+        placeholder="Filter tasks"
+        value={filter}
+        onChange={(e) => setFilter(e.target.value)}
+        style={{ display: "block", width: "100%", boxSizing: "border-box", minHeight: 44, marginTop: 16, padding: "8px 12px", fontSize: 16 }}
+      />
       <ul data-testid="task-list">
-        {tasks.map((t, i) => (
+        {shown.map((t, i) => (
           <li key={i} style={{ padding: "6px 0", overflowWrap: "anywhere" }}>
             {t}
           </li>

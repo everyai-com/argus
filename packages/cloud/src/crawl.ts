@@ -143,7 +143,7 @@ export async function runCrawl(env: Env, req: CrawlRequest, tenantId?: string): 
   for (const [pageUrl, list] of byPage) {
     const t = await applyTriage(env, owner, list, {
       pageUrl,
-      ranFamilies: new Set(["console", "network", "load", "responsive", "layout", "content", "link"]),
+      ranFamilies: new Set(["console", "network", "load", "responsive", "layout", "content", "state", "link"]),
       viewports: [req.viewport],
     });
     findings.push(...t.findings);

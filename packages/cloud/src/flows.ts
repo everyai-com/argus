@@ -24,7 +24,7 @@ import {
   type SuiteStatus,
   type NetworkProfile,
 } from "@argus/shared";
-import { evalPredicate, nearestMatch, resolveAnchor, weakestTier } from "./verify";
+import { evalPredicate, nearestMatch, resolveAnchor, rowText, weakestTier, type Snapshots } from "./verify";
 import { triageFlowFailure } from "./judge";
 import { hostOf, loadAuthProfile, saveAuthProfile } from "./auth-store";
 import { applyNetwork, applyViewport, contextOptionsFor, persistPredicates, rehomeFlow, settleBudget, trackInflight, waitForQuiet } from "./flow-utils";
@@ -165,12 +165,13 @@ function scopePredicates(predicates: Predicate[], since: number): Predicate[] {
 async function evalAllSettled(
   page: Page,
   buf: Buffers,
-  predicates: Predicate[]
+  predicates: Predicate[],
+  snapshots?: Snapshots
 ): Promise<PredicateResult[]> {
   let results: PredicateResult[] = [];
   for (let attempt = 0; attempt < 5; attempt++) {
     results = [];
-    for (const p of predicates) results.push(await evalPredicate(page, buf, p));
+    for (const p of predicates) results.push(await evalPredicate(page, buf, p, snapshots));
     if (results.every((r) => r.pass)) return results;
     await page.waitForTimeout(800);
   }
@@ -281,6 +282,30 @@ export async function replayFlow(
 
     await page.goto(flow.startUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
     await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => {});
+
+    // Live data drifts between runs. When the rows this flow reasons about
+    // aren't there, nothing was tested — that is not the app regressing.
+    if (flow.precondition) {
+      const pre = await evalAllSettled(page, buf, flow.precondition);
+      const unmet = pre.filter((r) => !r.pass);
+      if (unmet.length > 0) {
+        return {
+          flow: flow.name,
+          status: "error",
+          stepsRun: 0,
+          decision: {
+            verdict: "precondition_unmet",
+            whatChanged: `before step 0: ${unmet.map((f) => f.evidence).join("; ")}`,
+            nextAction:
+              "the data this flow depends on is not on the page — re-seed the test data or regenerate the flow; the app was not tested",
+          },
+          durationMs: Date.now() - t0,
+          screenshotKey: await finalShot(env, owner, page, flow.name),
+        };
+      }
+    }
+
+    const snapshots = new Map<string, string[]>();
 
     let network: NetworkProfile = "none"; // a recorded throttle is replayed as a step
     for (let i = 0; i < flow.steps.length; i++) {
@@ -431,7 +456,7 @@ export async function replayFlow(
 
       // Step expectations — scoped to this step's event window.
       if (step.expect.length > 0) {
-        const results = await evalAllSettled(page, buf, scopePredicates(step.expect, seqBefore));
+        const results = await evalAllSettled(page, buf, scopePredicates(step.expect, seqBefore), snapshots);
         const failed = results.filter((r) => !r.pass);
         if (failed.length > 0) {
           const key = await finalShot(env, owner, page, flow.name);
@@ -453,10 +478,15 @@ export async function replayFlow(
           }, { buf, judge: opts.judge });
         }
       }
+
+      if (step.snapshot) {
+        const texts = await resolveAnchor(page, step.snapshot.item).locator.allInnerTexts().catch(() => [] as string[]);
+        snapshots.set(step.snapshot.name, texts.map(rowText));
+      }
     }
 
     // The golden end condition.
-    const successResults = await evalAllSettled(page, buf, flow.success);
+    const successResults = await evalAllSettled(page, buf, flow.success, snapshots);
     const failedSuccess = successResults.filter((r) => !r.pass);
     const key = await finalShot(env, owner, page, flow.name);
 
@@ -486,7 +516,7 @@ export async function replayFlow(
       const tReload = Date.now();
       await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
       await waitForQuiet(page, tReload, settleBudget(3_000, network));
-      const kept = await evalAllSettled(page, buf, persist);
+      const kept = await evalAllSettled(page, buf, persist, snapshots);
       const lost = kept.filter((r) => !r.pass);
       if (lost.length > 0) {
         return await withTriage(env, {
@@ -811,13 +841,15 @@ export async function verifyFlows(
 
 /**
  * Argus could not test this flow — the app is not at fault: no browser slot,
- * a missing auth profile, or a crash before the first step ran.
+ * a missing auth profile, data the flow depends on that isn't there
+ * (`precondition`), or a crash before the first step ran.
  */
 export function isUntested(r: ReplayOutcome): boolean {
   const v = r.decision?.verdict;
   return (
     v === "fleet_busy" ||
     v === "auth_profile_missing" ||
+    v === "precondition_unmet" ||
     (v === "error" && r.stepsRun === 0 && r.failedStep === undefined)
   );
 }

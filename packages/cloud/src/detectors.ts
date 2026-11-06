@@ -7,6 +7,12 @@
  * low-contrast labels are one decision, not eleven).
  *
  * (Detector set after bugpatrol's detection rubric, Apache-2.0.)
+ *
+ * The `state/*` rules find implicit state machines showing their seams: a UI
+ * driven by independent flags (isLoading, error, isEmpty, saved) can render
+ * combinations no real state allows. Both halves must sit in the SAME region
+ * (form, dialog, section, list item…, else <main>) — a spinner in the sidebar
+ * and an error in a toast elsewhere are two widgets, not one contradiction.
  */
 import type { Page } from "@cloudflare/playwright";
 import type { Action, ActEffects, Finding, ViewportName } from "@argus/shared";
@@ -25,7 +31,10 @@ export type DetectorRule =
   | "layout/unstyled-page"
   | "content/placeholder-text"
   | "content/raw-value"
-  | "content/i18n-key";
+  | "content/i18n-key"
+  | "state/loading-and-error"
+  | "state/success-and-error"
+  | "state/empty-with-items";
 
 export interface PageState {
   hits: DetectorHit[];
@@ -161,6 +170,18 @@ export async function pageState(
           add("layout/unstyled-page", document.body, "no stylesheet applied");
         }
 
+        const busy: any[] = [];
+        const failed: any[] = [];
+        const succeeded: any[] = [];
+        const empty: any[] = [];
+        const BUSY_TEXT = /^(loading|saving|submitting|processing|uploading|please wait)\b.{0,30}(…|\.\.\.)?$/i;
+        const ERROR_TEXT = /^(error\b|something went wrong|failed to\b|could not\b|couldn['’]t\b|unable to\b)/i;
+        const SUCCESS_TEXT = /^(saved|success|added|created|updated|sent|submitted|done)\b|\bsuccessfully\b/i;
+        const EMPTY_TEXT = /^(no (results|items|tasks|data|records|entries|matches|messages|files|projects)\b|nothing (here|to show|found)\b|(the |this )?list is empty\b)/i;
+        const BUSY_CLASS = /(^|[\s_-])(spinner|spinning|loader|loading|skeleton)([\s_-]|$)/i;
+        const ERROR_CLASS = /(^|[\s_-])(error|danger)([\s_-]|$)/i;
+        const SUCCESS_CLASS = /(^|[\s_-])success([\s_-]|$)/i;
+
         // Visible text leaf-ish nodes: what a user actually reads.
         const TLDS = /\.(com|org|net|io|dev|ai|app|co|gov|edu|uk|de|fr|in|us|me|sh|xyz|cloud|tech|site)$/i;
         const walker = document.createTreeWalker(document.body, 4 /* NodeFilter.SHOW_TEXT */);
@@ -178,6 +199,61 @@ export async function pageState(
             add("content/raw-value", parent, `"${text.slice(0, 50)}"`);
           } else if (/^[a-z][a-zA-Z0-9_]*(\.[a-zA-Z0-9_]+){2,}$/.test(text) && !TLDS.test(text)) {
             add("content/i18n-key", parent, `"${text.slice(0, 50)}"`);
+          }
+          // The same walk feeds the state rules: what is each short message saying?
+          if (text.length <= 160) {
+            if (BUSY_TEXT.test(text)) busy.push(parent);
+            else if (ERROR_TEXT.test(text)) failed.push(parent);
+            else if (SUCCESS_TEXT.test(text)) succeeded.push(parent);
+            else if (EMPTY_TEXT.test(text)) empty.push(parent);
+          }
+        }
+
+        // ---- impossible states: two flags that should exclude each other ----
+        const shownBox = (el: any) => {
+          if (!visible(el) || el.closest("[aria-hidden='true'], [inert]")) return false;
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        };
+        const token = (el: any, re: RegExp) => re.test(String(el.getAttribute?.("class") ?? "")) || re.test(String(el.id ?? ""));
+        for (const el of Array.from(document.querySelectorAll('[aria-busy="true"], [role="progressbar"], [class*="spin" i], [class*="load" i], [class*="skeleton" i]')) as any[]) {
+          if (el.getAttribute("aria-busy") === "true" || el.getAttribute("role") === "progressbar" || token(el, BUSY_CLASS)) busy.push(el);
+        }
+        for (const el of Array.from(document.querySelectorAll('[role="alert"], [class*="error" i], [class*="danger" i]')) as any[]) {
+          if ((el.getAttribute("role") === "alert" || token(el, ERROR_CLASS)) && String(el.innerText ?? "").trim()) failed.push(el);
+        }
+        for (const el of Array.from(document.querySelectorAll('[role="status"], [class*="success" i]')) as any[]) {
+          const t = String(el.innerText ?? "").trim();
+          if (t && (token(el, SUCCESS_CLASS) || SUCCESS_TEXT.test(t))) succeeded.push(el);
+        }
+        const region = (el: any) =>
+          el.closest('form, dialog, [role="dialog"], section, article, aside, [role="region"], [role="tabpanel"], li, tr') ??
+          el.closest("main") ??
+          document.body;
+        const related = (a: any, b: any) => a !== b && !a.contains(b) && !b.contains(a) && region(a) === region(b);
+        const pair = (rule: string, xs: any[], ys: any[]) => {
+          const seen = new Set<any>();
+          for (const x of xs.filter(shownBox)) {
+            const y = ys.find((c) => shownBox(c) && related(x, c));
+            if (y && !seen.has(region(x))) {
+              seen.add(region(x));
+              add(rule, x, `${describe(x)} + ${describe(y)}`);
+            }
+          }
+        };
+        pair("state/loading-and-error", busy, failed);
+        pair("state/success-and-error", succeeded, failed);
+        // "Nothing here" next to real rows: the empty flag outlived the data.
+        for (const msg of empty.filter(shownBox)) {
+          let box = msg.parentElement;
+          for (let up = 0; box && up < 3 && box !== document.body; up++, box = box.parentElement) {
+            const rows = (Array.from(box.querySelectorAll('li, tbody tr, [role="row"], [role="listitem"]')) as any[]).filter(
+              (r) => !r.contains(msg) && !msg.contains(r) && shownBox(r) && String(r.innerText ?? "").trim()
+            );
+            if (rows.length > 0) {
+              add("state/empty-with-items", msg, `${describe(msg)} beside ${rows.length} row(s)`);
+              break;
+            }
           }
         }
           out = Object.entries(hits).map(([rule, h]) => ({ rule, count: h.count, samples: h.samples }));
@@ -284,6 +360,24 @@ const META: Record<DetectorRule, { severity: Finding["severity"]; category: Find
     category: "content",
     what: "a raw translation key is rendered instead of translated text",
     next: "add the key to the locale file, or fix the lookup",
+  },
+  "state/loading-and-error": {
+    severity: "minor",
+    category: "state",
+    what: "a loading indicator and an error show together in one region — the UI is in a state that should not exist",
+    next: "replace the separate isLoading/error flags with one status (idle | loading | error | success) so each render shows exactly one",
+  },
+  "state/success-and-error": {
+    severity: "minor",
+    category: "state",
+    what: "a success message and an error show together in one region — the user cannot tell whether it worked",
+    next: "clear the stale message on every transition, or derive both from one status value",
+  },
+  "state/empty-with-items": {
+    severity: "minor",
+    category: "state",
+    what: "an empty-state message shows beside real rows — the empty flag is out of sync with the data",
+    next: "derive the empty state from the data itself (items.length === 0 after load) instead of a separate flag",
   },
 };
 

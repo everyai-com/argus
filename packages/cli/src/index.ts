@@ -15,7 +15,20 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import process from "node:process";
 import readline from "node:readline";
 import type { Flow, SmokeReport } from "@argus/shared";
-import { buildCfSaasFlows, probeApp, type ProbeResult } from "./preset";
+import {
+  ROW_CANDIDATES,
+  buildCfSaasFlows,
+  buildListFlows,
+  chooseRows,
+  findNext,
+  findSearch,
+  gateDecision,
+  probeApp,
+  type ListProbe,
+  type ProbeResult,
+  type ReplayLike,
+  type SurfaceElement,
+} from "./preset";
 import { wireHarnesses, mcpServerPath, parseInitArgs, splitCredentials, DEFAULT_API } from "./harness";
 import { parseTarget, scanLocalPorts } from "./target";
 import { runFixLoop, type FixDeps, type FixOutcome, type Suite } from "./fix";
@@ -302,6 +315,22 @@ function loadFlowFilesLenient(dir: string): { flows: unknown[]; skipped: Array<{
   return { flows, skipped };
 }
 
+/** Render one page in a leased session and read its list surface: rows, search box, pager. */
+async function probeListAt(cfg: Config, sid: string, root: string, path: string): Promise<ListProbe | undefined> {
+  await api(cfg, "POST", `/v1/session/${sid}/act`, { action: "goto", url: root + path });
+  await api(cfg, "POST", `/v1/session/${sid}/act`, { action: "wait", ms: 900 });
+  const surface = await api<{ elements: SurfaceElement[] }>(cfg, "POST", `/v1/session/${sid}/query`, { interactive: true, limit: 100 });
+  const candidates: Array<{ anchor: (typeof ROW_CANDIDATES)[number]; texts: string[] }> = [];
+  for (const anchor of ROW_CANDIDATES) {
+    const q = await api<{ elements: Array<{ text?: string }> }>(cfg, "POST", `/v1/session/${sid}/query`, { anchor, limit: 50 }).catch(
+      () => ({ elements: [] })
+    );
+    candidates.push({ anchor, texts: q.elements.map((e) => e.text ?? "") });
+  }
+  const chosen = chooseRows(candidates);
+  return chosen ? { path, ...chosen, search: findSearch(surface.elements), next: findNext(surface.elements) } : undefined;
+}
+
 interface PresetGen {
   flows: Flow[];
   skipped: string[];
@@ -328,6 +357,7 @@ async function generatePresetSuite(
   });
   const sid = lease.sessionId;
   let probe: ProbeResult;
+  let publicList: ListProbe | undefined;
   try {
     probe = await probeApp(url, async (path: string) => {
       await api(cfg, "POST", `/v1/session/${sid}/act`, {
@@ -346,6 +376,7 @@ async function generatePresetSuite(
         texts: q.elements.map((e) => (e.text ?? e.name ?? "").trim()).filter(Boolean),
       };
     });
+    publicList = await probeListAt(cfg, sid, root, "/").catch(() => undefined);
   } finally {
     await api(cfg, "DELETE", `/v1/session/${sid}`).catch(() => {});
   }
@@ -361,6 +392,57 @@ async function generatePresetSuite(
     emailVar: opts.emailVar,
     passwordVar: opts.passwordVar,
   });
+
+  // ---- list cases: does the data respond, not just the page? -------------
+  // The signed-in list wins when there is one; it needs the profile the
+  // auth-login flow mints, so a first run (no profile yet) probes "/" only.
+  let list = publicList;
+  let listAuth: string | undefined;
+  if (probe.protectedPath) {
+    try {
+      const authed = await api<{ sessionId: string }>(cfg, "POST", "/v1/lease", {
+        url: root + probe.protectedPath,
+        label: "preset-list-probe",
+        ttlSeconds: 300,
+        authProfile: opts.authProfile,
+      });
+      try {
+        const found = await probeListAt(cfg, authed.sessionId, root, probe.protectedPath);
+        if (found) [list, listAuth] = [found, opts.authProfile];
+      } finally {
+        await api(cfg, "DELETE", `/v1/session/${authed.sessionId}`).catch(() => {});
+      }
+    } catch {
+      skipped.push(`signed-in list probe — no "${opts.authProfile}" auth profile yet (run verify once so auth-login mints it, then regenerate)`);
+    }
+  }
+  if (!list) {
+    skipped.push("list cases — no list with 2+ rows found on / or the signed-in area");
+  } else {
+    log(`  list: ${list.rows.length} rows on ${list.path}   search: ${list.search ? "found" : dim("none")}   pager: ${list.next ? "found" : dim("none")}`);
+    const gen = buildListFlows({ base: url, list, authProfile: listAuth });
+    skipped.push(...gen.skipped);
+    // The gate: a generated case joins the suite only after passing twice here.
+    const replay = (flow: Flow) =>
+      api<ReplayLike>(cfg, "POST", "/v1/flow/replay", { flow, judge: false }).catch(
+        (err): ReplayLike => ({ status: "error", stepsRun: 0, decision: { verdict: "error", whatChanged: String(err).slice(0, 200) } })
+      );
+    for (const flow of gen.flows) {
+      log(dim(`  gating ${flow.name} — replaying twice on this build ...`));
+      const gate = gateDecision(await replay(flow), await replay(flow));
+      if (gate.keep === "suite") {
+        flows.push(flow);
+      } else if (gate.keep === "candidate") {
+        const candidates = join(process.cwd(), ".argus", "candidates");
+        mkdirSync(candidates, { recursive: true });
+        writeFileSync(join(candidates, `${flow.name}.json`), JSON.stringify(flow, null, 2) + "\n");
+        skipped.push(`${flow.name} — held in .argus/candidates/ for review: ${gate.reason}`);
+      } else {
+        skipped.push(`${flow.name} — not saved: ${gate.reason}`);
+      }
+    }
+  }
+
   const dir = join(process.cwd(), ".argus", "flows");
   mkdirSync(dir, { recursive: true });
   for (const flow of flows) {

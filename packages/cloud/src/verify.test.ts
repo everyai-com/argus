@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Predicate } from "@argus/shared";
-import { evalPredicate, levenshtein, nearestMatch, tailUrl, weakestTier, type EventBuffers } from "./verify";
+import { evalPredicate, judgeRows, levenshtein, nearestMatch, tailUrl, weakestTier, type EventBuffers } from "./verify";
 
 const buffers = {
   network: [
@@ -235,5 +235,47 @@ describe("storage predicate", () => {
     });
     expect(r.pass).toBe(false);
     expect(r.evidence).toContain("could not read");
+  });
+});
+
+describe("judgeRows", () => {
+  const item = { css: "tbody tr" };
+  const rows = (extra: Partial<Extract<Predicate, { kind: "rows" }>>) =>
+    ({ kind: "rows", item, ...extra }) as Extract<Predicate, { kind: "rows" }>;
+  const snaps = new Map([["before", ["Acme Corp  open", "Beta LLC open", "Acme West closed"]]]);
+
+  it("passes a filter that kept only matching rows and removed some", () => {
+    const r = judgeRows(["Acme Corp open", "Acme West closed"], rows({ every: { includes: "acme" }, fewerThan: "before" }), snaps);
+    expect(r).toMatchObject({ pass: true, tier: "dom" });
+  });
+
+  it("fails an ignored filter — the unfiltered list still contains a stray row", () => {
+    const r = judgeRows(snaps.get("before")!, rows({ every: { includes: "Acme" }, fewerThan: "before" }), snaps);
+    expect(r.pass).toBe(false);
+    expect(r.evidence).toContain("Beta LLC");
+  });
+
+  it("fails as unverifiable on zero rows unless emptiness is the claim", () => {
+    expect(judgeRows([], rows({ every: { includes: "x" } }), snaps).evidence).toMatch(/unverifiable/);
+    expect(judgeRows([], rows({ none: { includes: "x" } }), snaps).pass).toBe(false);
+    expect(judgeRows([], rows({ maxCount: 0 }), snaps).pass).toBe(true);
+  });
+
+  it("fails as unverifiable when the named snapshot was never taken", () => {
+    const r = judgeRows(["a"], rows({ fewerThan: "missing" }), snaps);
+    expect(r).toMatchObject({ pass: false });
+    expect(r.evidence).toMatch(/unverifiable: no snapshot "missing"/);
+  });
+
+  it("fails a next page that only repeats page one (whitespace ignored)", () => {
+    expect(judgeRows(["Acme Corp open"], rows({ notSubsetOf: "before" }), snaps).pass).toBe(false);
+    expect(judgeRows(["Acme Corp open", "Gamma Inc"], rows({ notSubsetOf: "before" }), snaps).pass).toBe(true);
+  });
+
+  it("some + someNot prove a value splits the set", () => {
+    const split = rows({ some: { includes: "acme" }, someNot: { includes: "acme" } });
+    expect(judgeRows(snaps.get("before")!, split, snaps).pass).toBe(true);
+    expect(judgeRows(["Acme 1", "Acme 2"], split, snaps).pass).toBe(false);
+    expect(judgeRows(["Beta 1", "Beta 2"], split, snaps).pass).toBe(false);
   });
 });

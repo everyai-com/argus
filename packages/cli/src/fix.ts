@@ -59,7 +59,7 @@ export type FixOutcome =
   | { flow: string; result: "no-change" | "still-failing" | "agent-failed"; branch: string; why: string };
 
 /** Verdicts that mean "Argus could not test", never "the app is broken". */
-const UNTESTED = new Set(["fleet_busy", "auth_profile_missing"]);
+const UNTESTED = new Set(["fleet_busy", "auth_profile_missing", "precondition_unmet"]);
 
 /** Failures worth a fix: repeated (confirmed) product failures only — never flaky, never untested. */
 export function fixableFailures(suite: Suite): SuiteResult[] {

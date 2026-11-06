@@ -616,6 +616,30 @@ export const LeafPredicateSchema = z.discriminatedUnion("kind", [
     includes: z.string(),
   }),
   /**
+   * A claim over a SET of elements — every result row, not one. `item` is the
+   * one anchor that is meant to match many; everywhere else a multi-match is
+   * an error. Zero rows proves nothing about `every`/`none`/snapshots, so it
+   * fails as unverifiable unless the claim is emptiness itself (`maxCount: 0`).
+   */
+  z.object({
+    kind: z.literal("rows"),
+    item: AnchorSchema,
+    /** Every row's text includes this (case-insensitive). */
+    every: z.object({ includes: z.string().min(1) }).optional(),
+    /** No row's text includes this (case-insensitive). */
+    none: z.object({ includes: z.string().min(1) }).optional(),
+    /** At least one row's text includes this. */
+    some: z.object({ includes: z.string().min(1) }).optional(),
+    /** At least one row's text does NOT include this — with `some`, proves a value splits the set. */
+    someNot: z.object({ includes: z.string().min(1) }).optional(),
+    minCount: z.number().int().optional(),
+    maxCount: z.number().int().optional(),
+    /** Fewer rows than a `snapshot` taken earlier in this run — proves a filter removed something. */
+    fewerThan: z.string().optional(),
+    /** At least one row absent from an earlier `snapshot` — proves a page actually advanced. */
+    notSubsetOf: z.string().optional(),
+  }),
+  /**
    * Tier-1: the app itself declared this happened (@argus/sdk `signal()`).
    * A wrong-but-visible element cannot fake it, which is why it outranks
    * every DOM check. Requires the optional in-app SDK.
@@ -814,6 +838,8 @@ export const FindingSchema = z.object({
     "link",
     "layout", // deterministic geometry: occlusion, zero-size, tap targets, imagery
     "content", // leaked placeholders, raw i18n keys, "undefined"/"NaN" in the UI
+    "design", // advisory craft checks (accent/radius sprawl, emoji chrome, motion) — never a blocker
+    "state", // impossible UI states: loading+error, success+error, "empty" beside real rows
   ]),
   /** Stable rule id, e.g. "a11y/color-contrast", "layout/occlusion". */
   rule: z.string().optional(),
@@ -905,13 +931,13 @@ export type SmokeReport = z.infer<typeof SmokeReportSchema>;
 // Audit — the full UX/visual pass: a11y, perf, links, visual regression
 // ---------------------------------------------------------------------------
 
-export const AuditCheckSchema = z.enum(["a11y", "perf", "links", "visual", "layout"]);
+export const AuditCheckSchema = z.enum(["a11y", "perf", "links", "visual", "layout", "design"]);
 
 export const AuditRequestSchema = z.object({
   url: HttpUrlSchema,
   viewports: z.array(ViewportNameSchema).default(["mobile", "desktop"]),
   colorSchemes: z.array(z.enum(["light", "dark"])).default(["light"]),
-  checks: z.array(AuditCheckSchema).default(["a11y", "perf", "links", "visual", "layout"]),
+  checks: z.array(AuditCheckSchema).default(["a11y", "perf", "links", "visual", "layout", "design"]),
   /**
    * CSS selectors painted over before the visual compare (avatars, live
    * counters). The masked share of the screen is reported on every diff, and a
@@ -1054,6 +1080,12 @@ export const FlowStepSchema = z.object({
   anchor: AnchorSchema.optional(), // semantic anchor (never a raw ref)
   expect: z.array(PredicateSchema).default([]),
   label: z.string().optional(),
+  /**
+   * After this step settles, record the row texts `item` matches under this
+   * name. Lives only for the run — `rows.fewerThan` / `notSubsetOf` compare
+   * against it, so no live data is baked into the flow file.
+   */
+  snapshot: z.object({ name: z.string().min(1), item: AnchorSchema }).optional(),
 });
 export type FlowStep = z.infer<typeof FlowStepSchema>;
 
@@ -1086,6 +1118,12 @@ export const FlowSchema = z.object({
    * deliberately transient UI out of it.
    */
   persists: z.union([z.literal("success"), z.array(PredicateSchema).min(1).max(20)]).optional(),
+  /**
+   * The data shape this flow depends on, checked once the start page settles
+   * and before step 0. Live data drifts; when it no longer fits, the flow is
+   * `precondition_unmet` (untested), never a regression.
+   */
+  precondition: z.array(PredicateSchema).min(1).max(20).optional(),
 });
 export type Flow = z.infer<typeof FlowSchema>;
 
@@ -1105,6 +1143,8 @@ export const FlowVerdictSchema = z.enum([
   "fleet_busy",
   /** `success` held, then a reload lost it (`persists`): the outcome was never really saved. */
   "not_persisted",
+  /** The data the flow depends on wasn't there before step 0 — the app was NOT tested. */
+  "precondition_unmet",
 ]);
 export type FlowVerdict = z.infer<typeof FlowVerdictSchema>;
 
