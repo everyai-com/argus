@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "name": "persona-double-enter-no-error",
+  "startUrl": "http://localhost:5199/",
+  "viewport": "desktop",
+  "steps": [
+    {
+      "action": {
+        "action": "wait",
+        "ms": 1500
+      },
+      "expect": []
+    },
+    {
+      "action": {
+        "action": "fill",
+        "value": "Enter twice"
+      },
+      "anchor": {
+        "testid": "new-task"
+      },
+      "expect": []
+    },
+    {
+      "action": {
+        "action": "press",
+        "key": "Enter"
+      },
+      "anchor": {
+        "testid": "new-task"
+      },
+      "expect": []
+    },
+    {
+      "action": {
+        "action": "press",
+        "key": "Enter"
+      },
+      "anchor": {
+        "testid": "new-task"
+      },
+      "expect": []
+    }
+  ],
+  "success": [
+    {
+      "kind": "network",
+      "urlIncludes": "/api/tasks",
+      "method": "POST",
+      "status": 201,
+      "minCount": 1,
+      "maxCount": 1,
+      "since": 0,
+      "cumulative": false
+    },
+    {
+      "kind": "hidden",
+      "anchor": {
+        "role": "alert"
+      }
+    },
+    {
+      "kind": "text",
+      "anchor": {
+        "testid": "task-count"
+      },
+      "includes": "3 tasks"
+    }
+  ],
+  "dynamic": []
+}

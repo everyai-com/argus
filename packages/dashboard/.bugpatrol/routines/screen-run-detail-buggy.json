@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "id": "screen-run-detail-buggy",
+  "description": "Fully loaded run detail showing a console-error finding, performance metrics, and a screenshot thumbnail.",
+  "platform": "web",
+  "requires": [
+    "screen-run-detail"
+  ],
+  "steps": [
+    {
+      "kind": "tap",
+      "target": {
+        "role": "button",
+        "name": "← Runs",
+        "text": "← Runs",
+        "selector": "div:nth-of-type(3) > div > button:nth-of-type(1)",
+        "point": {
+          "x": 291.734375,
+          "y": 231.265625
+        }
+      },
+      "at": "https://argus-cloud.everyai-com.workers.dev/|Argus — browser verification console|f835f40c8afe"
+    },
+    {
+      "kind": "tap",
+      "target": {
+        "role": "link",
+        "name": "demo-buggy — open latest run",
+        "text": "FAIL audit demo-buggy 1 of 1 failing · 12m ago",
+        "selector": "div:nth-of-type(2) > a:nth-of-type(2)",
+        "point": {
+          "x": 604.1953125,
+          "y": 303.265625
+        }
+      },
+      "at": "https://argus-cloud.everyai-com.workers.dev/?run=7a9f0448|Argus — browser verification console|2c0ab88c3196"
+    }
+  ],
+  "screenId": "run-detail-buggy",
+  "expect": {
+    "elements": [
+      "Sessions",
+      "Capacity",
+      "GitHub",
+      "Account",
+      "API token",
+      "Clear token"
+    ]
+  },
+  "createdAt": "2026-10-14T09:00:36.038Z",
+  "updatedAt": "2026-10-14T09:00:36.038Z"
+}

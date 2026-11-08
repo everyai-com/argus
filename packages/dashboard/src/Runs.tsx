@@ -35,8 +35,15 @@ interface Report {
     baselineKey?: string;
     currentKey: string;
     diffKey?: string;
+    judgment?: { verdict: string; confidence: number; severity: string; model: string };
   }>;
   screenshots?: Array<{ key: string; viewport: string; colorScheme: string }>;
+  newFindings?: number;
+  regressions?: number;
+  suppressed?: Array<{ fingerprint: string; summary: string; reason?: string }>;
+  /** Crawl runs: the page map. */
+  pages?: Array<{ url: string; from?: string; title?: string; notFound: boolean; findings: number; loadMs?: number; error?: string; skipped?: string }>;
+  truncated?: boolean;
 }
 
 interface FlowResult {
@@ -46,6 +53,9 @@ interface FlowResult {
   durationMs: number;
   evidenceTier?: string;
   decision?: { whatChanged: string; nextAction: string };
+  triage?: { bugClass: string; severity: string; needsHuman: boolean; confidence: number; model: string };
+  confirmation?: { state: "confirmed" | "flaky"; second?: { status: string; whatChanged?: string } };
+  reproFlow?: string;
 }
 
 interface RunData {
@@ -53,6 +63,7 @@ interface RunData {
   files: string[];
   report?: Report;
   audit_report?: Report;
+  crawl_report?: Report;
   flows_verdict?: { status: string; summary: string; results?: FlowResult[] };
 }
 
@@ -66,11 +77,17 @@ function findingToPrompt(f: Finding, url?: string): string {
     f.decision ? `- What changed: ${f.decision.whatChanged}` : undefined,
     f.decision?.whereInSource ? `- Where: ${f.decision.whereInSource}` : undefined,
     f.decision ? `- Suggested next action: ${f.decision.nextAction}` : undefined,
+    f.judged
+      ? `- Vision judge: severity ${f.judged.severity} (${f.judged.model}, ${Math.round(f.judged.confidence * 100)}% confident${f.judged.note ? ` — ${f.judged.note}` : ""})`
+      : undefined,
     `After fixing, re-run the Argus check to verify the fix (argus_flow_verify or argus audit).`,
   ]
     .filter(Boolean)
     .join("\n");
 }
+
+/** Machine enum → readable words: rendering_noise → rendering noise. */
+const words = (s: string): string => s.replace(/_/g, " ");
 
 function Artifact({ token, src, alt }: { token: string; src: string; alt: string }): React.ReactElement {
   const { url, err } = useArtifact(token, src);
@@ -358,7 +375,7 @@ export function RunDetail({
       .catch((e) => setError(String(e)));
   }, [runId, token]);
 
-  const report = data?.audit_report ?? data?.report;
+  const report = data?.audit_report ?? data?.crawl_report ?? data?.report;
   const flows = data?.flows_verdict;
 
   const findings = useMemo(() => {
@@ -375,6 +392,61 @@ export function RunDetail({
   }, [findings]);
 
   const diffs = (report?.visual ?? []).filter((v) => v.status === "diff");
+
+  // A flow suite's results — on their own for a flows run, beside the report otherwise.
+  // (Used to render only inside the report block, so every flows-only run showed a blank page.)
+  const flowsPanel = flows ? (
+      <div className="panel">
+        <div className="panel-head">
+          <Verdict status={flows.status} />
+          <h2>Flow suite</h2>
+          <span className="dim grow">{flows.summary}</span>
+        </div>
+        <div className="panel-body" style={{ paddingTop: 4, paddingBottom: 4 }}>
+          {(flows.results ?? []).map((r) => (
+            <div
+              className={`finding ${r.status === "ok" ? "info" : r.confirmation?.state === "flaky" ? "major" : "critical"}`}
+              key={r.flow}
+            >
+              <div className="head">
+                <Verdict status={r.confirmation?.state === "flaky" ? "flaky" : r.status} />
+                <code className="mono">{r.flow}</code>
+                <Tier tier={r.evidenceTier} />
+                <span className="grow" />
+                <span className="faint num">
+                  {r.stepsRun} steps · {(r.durationMs / 1000).toFixed(1)}s
+                </span>
+              </div>
+              {r.decision ? (
+                <div className="decision">
+                  {r.decision.whatChanged} → <b>{r.decision.nextAction}</b>
+                </div>
+              ) : null}
+              {r.confirmation?.state === "flaky" ? (
+                <div className="faint small">
+                  re-run disagreed ({r.confirmation.second?.status}
+                  {r.confirmation.second?.whatChanged ? `: ${r.confirmation.second.whatChanged}` : ""}) — not blocking
+                </div>
+              ) : r.confirmation?.state === "confirmed" ? (
+                <div className="faint small">confirmed by a second replay</div>
+              ) : null}
+              {r.reproFlow ? (
+                <div className="faint small">
+                  repro saved: <code className="k">{r.reproFlow}</code>
+                </div>
+              ) : null}
+              {r.triage ? (
+                <div className="faint small">
+                  {words(r.triage.bugClass)} · {r.triage.severity}
+                  {r.triage.needsHuman ? " · needs human" : ""} · {r.triage.model}{" "}
+                  {Math.round(r.triage.confidence * 100)}%
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      </div>
+  ) : null;
 
   return (
     <div>
@@ -442,6 +514,15 @@ export function RunDetail({
                   ) : null}
                 </div>
                 <div className="panel-body" style={{ paddingTop: 4, paddingBottom: 4 }}>
+                  {report.suppressed?.length ? (
+                    <div className="faint small" style={{ padding: "6px 0" }}>
+                      {report.suppressed.length} dismissed finding(s) suppressed:{" "}
+                      {report.suppressed
+                        .slice(0, 3)
+                        .map((x) => `${x.summary}${x.reason ? ` (${x.reason})` : ""}`)
+                        .join(" · ")}
+                    </div>
+                  ) : null}
                   {findings.length === 0 ? (
                     <div className="dim" style={{ padding: "10px 0" }}>
                       No findings — the run came back clean.
@@ -452,12 +533,29 @@ export function RunDetail({
                         <div className="head">
                           <Badge tone={toneOf(f.severity)}>{f.severity}</Badge>
                           <Badge plain>{f.category}</Badge>
+                          {f.triage?.state === "new" ? <Badge tone="warn">new</Badge> : null}
+                          {f.triage?.state === "regression" ? <Badge tone="fail">regression</Badge> : null}
+                          {f.triage?.state === "known" && f.triage.occurrences ? (
+                            <span className="faint small">seen {f.triage.occurrences}×</span>
+                          ) : null}
                           <span className="grow" />
+                          {f.fingerprint ? (
+                            <code className="faint small" title="fingerprint — dismiss with argus_triage">
+                              {f.fingerprint}
+                            </code>
+                          ) : null}
                           <button className="btn sm quiet" onClick={() => copy(f.id, findingToPrompt(f, report.url))}>
                             {copied === f.id ? "copied ✓" : "copy fix prompt"}
                           </button>
                         </div>
                         <div className="summary">{f.summary}</div>
+                        {f.judged ? (
+                          <div className="faint small">
+                            judged {f.judged.severity} · {f.judged.model}{" "}
+                            {Math.round(f.judged.confidence * 100)}%
+                            {f.judged.note ? <span> — {f.judged.note}</span> : null}
+                          </div>
+                        ) : null}
                         {f.detail ? <div className="detail">{f.detail}</div> : null}
                         {f.decision ? (
                           <div className="decision">
@@ -476,28 +574,36 @@ export function RunDetail({
                 </div>
               </div>
 
-              {flows ? (
+              {flowsPanel}
+
+              {report.pages?.length ? (
                 <div className="panel">
                   <div className="panel-head">
-                    <Verdict status={flows.status} />
-                    <h2>Flow suite</h2>
-                    <span className="dim grow">{flows.summary}</span>
+                    <h2>Pages crawled</h2>
+                    <span className="dim grow">
+                      {report.pages.length} page(s){report.truncated ? " · more links found than the page budget" : ""}
+                    </span>
                   </div>
                   <div className="panel-body" style={{ paddingTop: 4, paddingBottom: 4 }}>
-                    {(flows.results ?? []).map((r) => (
-                      <div className={`finding ${r.status === "ok" ? "info" : "critical"}`} key={r.flow}>
+                    {report.pages.map((pg) => (
+                      <div className={`finding ${pg.error || pg.notFound ? "critical" : pg.findings ? "major" : "info"}`} key={pg.url}>
                         <div className="head">
-                          <Verdict status={r.status} />
-                          <code className="mono">{r.flow}</code>
-                          <Tier tier={r.evidenceTier} />
+                          <Verdict status={pg.error ? "error" : pg.notFound ? "fail" : pg.findings ? "warn" : "pass"} />
+                          <code className="mono truncate">{new URL(pg.url).pathname + new URL(pg.url).search}</code>
                           <span className="grow" />
                           <span className="faint num">
-                            {r.stepsRun} steps · {(r.durationMs / 1000).toFixed(1)}s
+                            {pg.skipped ? `skipped — ${pg.skipped}` : (
+                              <>
+                                {pg.notFound ? "not found · " : ""}
+                                {pg.findings} finding(s){pg.loadMs !== undefined ? ` · ${pg.loadMs}ms` : ""}
+                              </>
+                            )}
                           </span>
                         </div>
-                        {r.decision ? (
-                          <div className="decision">
-                            {r.decision.whatChanged} → <b>{r.decision.nextAction}</b>
+                        {pg.title || pg.from ? (
+                          <div className="faint small">
+                            {pg.title}
+                            {pg.from ? ` · linked from ${new URL(pg.from).pathname}` : ""}
                           </div>
                         ) : null}
                       </div>
@@ -521,6 +627,13 @@ export function RunDetail({
                         <div key={v.currentKey} style={{ marginBottom: 14 }}>
                           <div className="micro">
                             {caption} · {(v.diffRatio * 100).toFixed(1)}% changed
+                            {v.judgment ? (
+                              <span>
+                                {" "}
+                                · judged {words(v.judgment.verdict)} ({v.judgment.model}{" "}
+                                {Math.round(v.judgment.confidence * 100)}%)
+                              </span>
+                            ) : null}
                           </div>
                           <div className="diffrow" style={{ marginTop: 6 }}>
                             {v.baselineKey ? (
@@ -579,6 +692,8 @@ export function RunDetail({
           </div>
         </>
       ) : null}
+
+      {!report && flowsPanel ? <div className="rise">{flowsPanel}</div> : null}
     </div>
   );
 }

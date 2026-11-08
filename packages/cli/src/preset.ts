@@ -13,7 +13,7 @@
  *
  * Anything that can't be confirmed is skipped and reported, never guessed.
  */
-import type { Flow, Predicate } from "@argus/shared";
+import type { Anchor, Flow, Predicate } from "@argus/shared";
 
 /** What a rendered page looks like, as seen through a real browser. */
 export interface RenderedPage {
@@ -87,6 +87,9 @@ export async function probeApp(base: string, render: RenderProbe): Promise<Probe
 
   const exists = async (path: string): Promise<boolean> => {
     const page = await render(path);
+    // A browser error page (chrome-error://, about:blank) is not a redirect:
+    // an empty 404 lands there and once read as "real route" for every path.
+    if (!/^https?:/i.test(page.url)) return false;
     // A redirect away from the requested path still means the route is real.
     if (!page.url.endsWith(path)) return true;
     return !sameShape(page, fallback);
@@ -286,4 +289,188 @@ export function buildCfSaasFlows(opts: PresetOptions): { flows: Flow[]; skipped:
   }
 
   return { flows, skipped };
+}
+
+// ---------------------------------------------------------------------------
+// Discriminating list cases — does the data respond, not just the page?
+// See docs/discriminating-cases.md.
+// ---------------------------------------------------------------------------
+
+/** An interactive element as the probe's surface scan reports it. */
+export interface SurfaceElement {
+  role?: string;
+  name?: string;
+  text?: string;
+  testid?: string;
+  tag?: string;
+}
+
+/** A list page the probe found: its rows, a search box over them, maybe a pager. */
+export interface ListProbe {
+  path: string;
+  /** Matches EVERY row — the one anchor that is meant to match many. */
+  item: Anchor;
+  rows: string[];
+  search?: Anchor;
+  next?: Anchor;
+}
+
+/** Row containers, most specific first. A table body excludes its header row. */
+export const ROW_CANDIDATES: Anchor[] = [{ css: "tbody tr" }, { role: "listitem" }];
+
+const SEARCH_NAME = /search|filter/i;
+const NEXT_NAME = /^(next( page)?|›|»|→)$/i;
+
+/** A search control on the surface: testid first, else the exact label it advertises. */
+export function findSearch(elements: SurfaceElement[]): Anchor | undefined {
+  const el = elements.find(
+    (e) => e.tag === "input" && (e.role === "searchbox" || SEARCH_NAME.test(e.name ?? "") || SEARCH_NAME.test(e.testid ?? ""))
+  );
+  if (!el) return undefined;
+  if (el.testid) return { testid: el.testid };
+  if (el.role === "searchbox") return { role: "searchbox", name: el.name };
+  if (!el.name) return undefined;
+  // The scan's name is aria-label ?? placeholder — match whichever it was.
+  const v = el.name.replace(/"/g, '\\"');
+  return { css: `input[aria-label="${v}"], input[placeholder="${v}"]` };
+}
+
+/** A next-page control: a link or button whose whole label says "next". */
+export function findNext(elements: SurfaceElement[]): Anchor | undefined {
+  const el = elements.find((e) => NEXT_NAME.test((e.text ?? e.name ?? "").trim()));
+  if (!el) return undefined;
+  if (el.testid) return { testid: el.testid };
+  return { role: el.tag === "a" || el.role === "link" ? "link" : "button", name: (el.text ?? el.name ?? "").trim() };
+}
+
+/**
+ * Choose the value to type into the search box. It must DISCRIMINATE: some
+ * rows include it (case-insensitive) and some don't — otherwise an ignored
+ * filter and a working one look identical. Undefined when no value splits
+ * the rows; the case is then skipped, never guessed.
+ */
+export function pickDiscriminatingValue(rows: string[]): string | undefined {
+  if (rows.length < 2) return undefined;
+  const lower = rows.map((r) => r.toLowerCase());
+  // Words, not ids: pure numbers are volatile and often not searchable.
+  const tokens = new Set(lower.flatMap((r) => r.match(/[\p{L}\p{N}]{3,}/gu) ?? []).filter((t) => !/^\d+$/.test(t)));
+  let best: { token: string; distance: number } | undefined;
+  for (const token of tokens) {
+    // Counted the way the replayed `rows` check matches: case-insensitive substring.
+    const hits = lower.filter((r) => r.includes(token)).length;
+    if (hits === 0 || hits === rows.length) continue;
+    // Closest to half the rows splits best and survives a little data drift.
+    const distance = Math.abs(hits / rows.length - 0.5);
+    const better =
+      !best ||
+      distance < best.distance ||
+      (distance === best.distance && (token.length > best.token.length || (token.length === best.token.length && token < best.token)));
+    if (better) best = { token, distance };
+  }
+  return best?.token;
+}
+
+/** The list cases for one probed page. Row data never lands in the file — only V and anchors. */
+export function buildListFlows(opts: {
+  base: string;
+  list: ListProbe;
+  authProfile?: string;
+}): { flows: Flow[]; skipped: string[] } {
+  const { list, authProfile } = opts;
+  const root = opts.base.replace(/\/$/, "");
+  const flows: Flow[] = [];
+  const skipped: string[] = [];
+  const clean: Predicate = { kind: "console-clean", since: 0, cumulative: false, includeThirdParty: false };
+  const auth = authProfile ? { auth: authProfile } : {};
+
+  const value = list.search ? pickDiscriminatingValue(list.rows) : undefined;
+  if (!list.search) {
+    skipped.push(`list-filter-applies — no search control on ${list.path}`);
+  } else if (!value) {
+    skipped.push(`list-filter-applies — no value splits the ${list.rows.length} rows on ${list.path}`);
+  } else {
+    flows.push({
+      version: 1,
+      name: "list-filter-applies",
+      startUrl: root + list.path,
+      viewport: "desktop",
+      ...auth,
+      // The split this case depends on — gone tomorrow means untested, not regressed.
+      precondition: [
+        { kind: "rows", item: list.item, minCount: 2, some: { includes: value }, someNot: { includes: value } },
+      ],
+      steps: [
+        { action: { action: "wait", ms: 800 }, expect: [], snapshot: { name: "before", item: list.item } },
+        { action: { action: "fill", value }, anchor: list.search, expect: [] },
+        // Debounced search fetches after the act settles — give it a beat.
+        { action: { action: "wait", ms: 1500 }, expect: [] },
+      ],
+      success: [
+        { kind: "rows", item: list.item, minCount: 1, every: { includes: value }, fewerThan: "before" },
+        clean,
+      ],
+      dynamic: [],
+    });
+  }
+
+  if (!list.next) {
+    skipped.push(`list-next-page-advances — no next-page control on ${list.path}`);
+  } else {
+    flows.push({
+      version: 1,
+      name: "list-next-page-advances",
+      startUrl: root + list.path,
+      viewport: "desktop",
+      ...auth,
+      precondition: [{ kind: "rows", item: list.item, minCount: 1 }],
+      steps: [
+        { action: { action: "wait", ms: 800 }, expect: [], snapshot: { name: "page1", item: list.item } },
+        { action: { action: "click" }, anchor: list.next, expect: [] },
+        { action: { action: "wait", ms: 1200 }, expect: [] },
+      ],
+      success: [{ kind: "rows", item: list.item, minCount: 1, notSubsetOf: "page1" }, clean],
+      dynamic: [],
+    });
+  }
+
+  return { flows, skipped };
+}
+
+/** Pick the row set to reason about: the first candidate that renders ≥2 rows with text. */
+export function chooseRows(candidates: Array<{ anchor: Anchor; texts: string[] }>): { item: Anchor; rows: string[] } | undefined {
+  for (const c of candidates) {
+    const rows = c.texts.map((t) => t.trim()).filter(Boolean);
+    if (rows.length >= 2) return { item: c.anchor, rows };
+  }
+  return undefined;
+}
+
+/** What a replay reports, as far as the generation gate cares. */
+export interface ReplayLike {
+  status: string;
+  stepsRun?: number;
+  failedStep?: number;
+  decision?: { verdict?: string; whatChanged?: string };
+}
+
+const UNTESTED_VERDICTS = new Set(["fleet_busy", "auth_profile_missing", "precondition_unmet"]);
+
+/**
+ * The generation gate: a generated case joins the suite only after it passes
+ * twice on the build it was generated from. The same failure twice may be a
+ * real bug or a bad case — it is kept as a candidate for a human, never run
+ * in the suite. Disagreement or "couldn't test" drops it.
+ */
+export function gateDecision(first: ReplayLike, second: ReplayLike): { keep: "suite" | "candidate" | "drop"; reason: string } {
+  const untested = (r: ReplayLike) =>
+    UNTESTED_VERDICTS.has(r.decision?.verdict ?? "") || (r.decision?.verdict === "error" && r.stepsRun === 0 && r.failedStep === undefined);
+  const blocked = [first, second].find(untested);
+  if (blocked) return { keep: "drop", reason: `could not test (${blocked.decision?.verdict})` };
+  if (first.status === "ok" && second.status === "ok") return { keep: "suite", reason: "passed twice" };
+  const sig = (r: ReplayLike) =>
+    [r.status, r.decision?.verdict ?? "", r.failedStep ?? "", (r.decision?.whatChanged ?? "").replace(/\d{4,}/g, "#")].join("|");
+  if (first.status !== "ok" && second.status !== "ok" && sig(first) === sig(second)) {
+    return { keep: "candidate", reason: `failed the same way twice: ${first.decision?.whatChanged ?? first.decision?.verdict}` };
+  }
+  return { keep: "drop", reason: "results disagreed between two runs (flaky at generation)" };
 }

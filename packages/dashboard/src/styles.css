@@ -258,6 +258,35 @@ code, .mono, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; 
 
 .chip.tier { display: inline-flex; align-items: center; gap: 4px; }
 
+/* --- launch QA ----------------------------------------------------------- */
+
+.qa-goal { font-size: var(--fs-lg); font-weight: 600; }
+/* five users, never a ragged last row: every cell grows to fill its line */
+.qa-wall { display: flex; flex-wrap: wrap; }
+.qa-wall > .cell { flex: 1 1 150px; }
+.qa-stats { margin-top: 12px; }
+.qa-split { display: grid; grid-template-columns: minmax(300px, 0.9fr) minmax(0, 1.4fr); gap: 12px; margin-top: 12px; align-items: start; }
+.qa-split > .panel + .panel { margin-top: 0; }
+.qa-row {
+  grid-template-columns: 64px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 10px 14px;
+  width: 100%; background: none; border-left: 0; border-right: 0; border-top: 0; font: inherit; text-align: left;
+}
+.qa-row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.qa-row-title { font-weight: 600; }
+.qa-row-side { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.qa-thumb { width: 64px; height: 44px; object-fit: cover; object-position: top; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--ink-3); display: block; }
+.qa-detail { position: sticky; top: 12px; }
+.qa-title { margin: 0; font-size: var(--fs-xl); line-height: 1.25; }
+.qa-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.qa-section { margin-top: 16px; }
+.qa-section h3 { margin: 0 0 6px; color: var(--text-3); }
+.qa-voice { margin: 0 0 8px; max-width: 72ch; line-height: 1.55; }
+
+@media (max-width: 900px) {
+  .qa-split { grid-template-columns: 1fr; }
+  .qa-detail { position: static; }
+}
+
 /* --- stats --------------------------------------------------------------- */
 
 .statgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(126px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }

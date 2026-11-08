@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "platform": "web",
+  "screens": [
+    {
+      "name": "Task Board",
+      "description": "Single page listing tasks with a counter and a field plus Add button to create tasks.",
+      "platform": "web",
+      "firstSeenAt": "2026-10-14T08:46:16.836Z",
+      "id": "task-board",
+      "location": "https://argus-demo.everyai-com.workers.dev/",
+      "screenKey": "https://argus-demo.everyai-com.workers.dev/|Argus Demo — Task Board",
+      "routineId": "screen-task-board",
+      "lastScreenshot": ".bugpatrol/runs/sessions/ses_20261014085840_b42f/005-task-board.png",
+      "links": [],
+      "visits": 2,
+      "lastSeenAt": "2026-10-14T08:59:19.130Z"
+    }
+  ],
+  "updatedAt": "2026-10-14T08:59:19.130Z"
+}

@@ -30,6 +30,8 @@ jobs:
     env:
       ARGUS_API: ${{ vars.ARGUS_API_URL }}
       ARGUS_TOKEN: ${{ secrets.ARGUS_E2E_TOKEN }}
+      ARGUS_VERIFY_ENABLED: ${{ vars.ARGUS_VERIFY_ENABLED }}
+      ARGUS_VERIFY_TARGET: ${{ vars.ARGUS_VERIFY_TARGET }}
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -40,9 +42,25 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      # Executors that skip `uses:` actions (Flare) still get the pinned pnpm;
+      # on GitHub, pnpm/action-setup already put it on PATH and this is a no-op.
+      - name: Ensure pnpm
+        run: |
+          node --version
+          if ! command -v pnpm >/dev/null 2>&1; then
+            (corepack enable && corepack prepare pnpm@11.3.0 --activate) || npm install -g pnpm@11.3.0
+          fi
+          pnpm --version
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @argus/cli build
       # Non-zero exit on any failure — this is the gate. The printed verdict and
-      # per-finding decision envelopes are the feedback.
+      # per-finding decision envelopes are the feedback. The opt-in is checked
+      # here too: an executor that ignores the job-level `if:` (Flare) must skip,
+      # never fail — while an enabled-but-misconfigured repo still fails loudly.
       - name: Verify
-        run: node packages/cli/dist/index.js verify "${{ vars.ARGUS_VERIFY_TARGET }}"
+        run: |
+          if [ "$ARGUS_VERIFY_ENABLED" != "true" ]; then
+            echo "Argus verification is opt-in (vars.ARGUS_VERIFY_ENABLED) and not enabled here — skipping."
+            exit 0
+          fi
+          node packages/cli/dist/index.js verify "$ARGUS_VERIFY_TARGET"

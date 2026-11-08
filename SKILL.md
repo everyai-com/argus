@@ -56,3 +56,4 @@ Only `argus_assert` and a flow's `expect` / `success` predicates produce a verdi
 - `docs/harness-support.md` — the per-harness wiring matrix.
 - `README.md` — flows, auth profiles, the `cf-saas` preset, the deploy gate, the GitHub App.
 - `skills/argus-explore/SKILL.md` — the full exploration protocol.
+- `skills/argus-personas/SKILL.md` — launch QA with five first-time-user personas (impatient, skeptic, mobile on slow 3G, literal reader, breaker), ranked by how many hit each issue, fixed and re-proved.

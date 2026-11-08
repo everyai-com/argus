@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "id": "screen-github",
+  "description": "Status of the GitHub PR integration and repository configuration JSON reference.",
+  "platform": "web",
+  "requires": [
+    "screen-capacity"
+  ],
+  "steps": [
+    {
+      "kind": "tap",
+      "target": {
+        "role": "button",
+        "name": "GitHub",
+        "text": "GitHub",
+        "selector": "div:nth-of-type(2) > button:nth-of-type(2)",
+        "point": {
+          "x": 115.5,
+          "y": 306.375
+        }
+      },
+      "at": "https://argus-cloud.everyai-com.workers.dev/?tab=github|Argus — browser verification console|d8870414f5c2"
+    }
+  ],
+  "screenId": "github",
+  "expect": {
+    "elements": [
+      "Sessions",
+      "Capacity",
+      "GitHub",
+      "Account",
+      "API token",
+      "Clear token"
+    ]
+  },
+  "createdAt": "2026-10-14T09:02:18.987Z",
+  "updatedAt": "2026-10-14T09:02:18.987Z"
+}

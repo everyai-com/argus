@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "id": "screen-account",
+  "description": "Create account / sign in form for minting a tenant token; not used in this test since token is pasted directly.",
+  "platform": "web",
+  "requires": [
+    "enter-app"
+  ],
+  "steps": [],
+  "screenId": "account",
+  "expect": {
+    "elements": [
+      "Sessions",
+      "Capacity",
+      "GitHub",
+      "Account",
+      "API token",
+      "Clear token"
+    ]
+  },
+  "createdAt": "2026-10-14T08:59:06.805Z",
+  "updatedAt": "2026-10-14T08:59:06.805Z"
+}

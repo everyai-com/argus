@@ -208,6 +208,18 @@ describe("triageFlowFailure", () => {
     await expect(triageFlowFailure(env, input())).resolves.toBeUndefined();
     await expect(triageFlowFailure({} as unknown as Env, input())).resolves.toBeUndefined();
   });
+
+  it("abstains below the inconclusive floor instead of attaching a guess", async () => {
+    // Observed live: a torn severity call (0.07) still shipped as "major".
+    const { env } = mockEnv(async () => ({
+      answers: {
+        bug_class: choice("network_failure", 0.6),
+        severity: choice("major", 0.07),
+        needs_human: noul(0.2),
+      },
+    }));
+    await expect(triageFlowFailure(env, input())).resolves.toBeUndefined();
+  });
 });
 
 describe("gradeFindings", () => {

@@ -1,0 +1,30 @@
+version: 1
+
+# Written by `bugpatrol init` on 2026-10-14. Correct any value that is wrong.
+# Docs: https://github.com/agent-labs-dev/bugpatrol/blob/main/docs/configuration.md
+
+app:
+  platform: web
+# Paths are relative to the project root: the folder that holds .bugpatrol/.
+  source: .                          # the repo that the fixer edits
+  # The dashboard is served by the deployed argus-cloud worker (it calls /v1 same-origin).
+  connect:
+    url: https://argus-cloud.everyai-com.workers.dev/
+  instructions: .bugpatrol/instructions.md   # plain English for the explorer: sign in, main flows, never-do list
+  secrets: [ARGUS_TEST_TOKEN]                        # env var names the explorer may use as {{NAME}}, e.g. [TEST_PASSWORD]
+
+# Each agent runs on an LLM: a local agent CLI (claude, codex, kimi, pi) or an API key.
+agents:
+  # Automatic checks, to compare with Argus's own layout detectors.
+  checks: [usability/contrast, usability/tap-target, layout/occlusion, layout/zero-size-interactive, layout/horizontal-scroll, rendering/broken-imagery]
+  explorer:                          # uses the app and reports what looks wrong
+    use:                             # fast vision model for the long loop (Bugpatrol's guidance)
+      runtime: cli
+      command: claude -p --output-format json --model claude-sonnet-5 --tools '' --mcp-config {mcp} --strict-mcp-config --allowedTools mcp__bugpatrol
+  judge:                             # decides which reports are real bugs, and writes the issues
+    use: claude
+  fixer:                             # writes a fix in its own git worktree
+    enabled: false                   # turn on when you want Bugpatrol to fix bugs
+    use: claude
+  github:
+    enabled: false                   # turn on to open PRs and issues (needs the gh CLI)

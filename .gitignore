@@ -9,3 +9,6 @@ coverage/
 .argus/config.json
 .commandcode/
 reticle/
+.argus/worktrees/
+.argus/patrol.json
+.argus/personas/

@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "id": "repro-f69086d75d2c",
+  "description": "Reproduces: Opening a run from the Fleet shows a blank page instead of its results",
+  "platform": "web",
+  "requires": [
+    "screen-run-detail"
+  ],
+  "steps": [],
+  "screenId": "run-detail",
+  "bug": {
+    "lacks": "findings, screenshot, flow, confirmed by a second replay, repro saved"
+  },
+  "createdAt": "2026-10-14T09:05:04.675Z",
+  "updatedAt": "2026-10-14T09:05:04.675Z"
+}

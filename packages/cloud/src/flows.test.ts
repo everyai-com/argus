@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { FlowVerdictSchema } from "@argus/shared";
 import type { Flow } from "@argus/shared";
 import { ambiguityDecision } from "./flows";
-import { rehomeFlow } from "./flow-utils";
+import { persistPredicates, rehomeFlow } from "./flow-utils";
 
 const flow: Flow = {
   version: 1,
@@ -60,5 +60,29 @@ describe("ambiguous anchors", () => {
   it("stays legible when candidates cannot be described", () => {
     const d = ambiguityDecision(0, ".btn", "css", 12, []);
     expect(d.whatChanged).toBe('step 0: anchor ".btn" (via css) matched 12 elements');
+  });
+});
+
+describe("persists", () => {
+  const base = {
+    version: 1 as const,
+    name: "add",
+    startUrl: "https://app.dev/",
+    viewport: "desktop" as const,
+    steps: [{ action: { action: "reload" as const }, expect: [] }],
+    dynamic: [],
+    success: [
+      { kind: "network" as const, urlIncludes: "/api", minCount: 1, since: 0, cumulative: false },
+      { kind: "text" as const, anchor: { testid: "count" }, includes: "3 tasks" },
+      { kind: "console-clean" as const, since: 0, cumulative: false, includeThirdParty: false },
+    ],
+  };
+  it('"success" re-checks only the predicates that describe state', () => {
+    expect(persistPredicates({ ...base, persists: "success" })).toEqual([base.success[1]]);
+  });
+  it("is off unless asked, and takes explicit predicates verbatim", () => {
+    expect(persistPredicates(base)).toEqual([]);
+    const own = [{ kind: "visible" as const, anchor: { text: "Saved item" } }];
+    expect(persistPredicates({ ...base, persists: own })).toEqual(own);
   });
 });

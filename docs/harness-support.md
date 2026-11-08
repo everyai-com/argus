@@ -27,7 +27,11 @@ reads `GEMINI.md` by default and joins in once `context.fileName` points at
 `AGENTS.md` — the `gemini` target does that for you, and never overwrites a value
 the project already set.
 
-`argus init <api-url> <token> [--harness claude,cursor,vscode,gemini,agents,codex|all] [--write-global]`
+`argus init [api-url] [token] [--api <url>] [--token <token>] [--harness claude,cursor,vscode,gemini,agents,codex|all] [--write-global]`
+
+Bare `argus init` uses the hosted Argus cloud and resolves the token from
+`--token` → `ARGUS_TOKEN` → saved config → interactive prompt, so most
+projects wire with zero arguments.
 
 - Default: `claude` + `agents`, plus `cursor`/`vscode`/`gemini` when their dirs
   exist.
@@ -88,7 +92,8 @@ and talltrack:
    fuller standing-verification block.
 3. **Skill** — the exploration protocol is harness-neutral in
    `skills/argus-explore/SKILL.md`; Claude Code loads it through the shim at
-   `.claude/skills/argus-explore/SKILL.md`.
+   `.claude/skills/argus-explore/SKILL.md`. The persona launch-QA protocol
+   (`skills/argus-personas/SKILL.md`) ships the same way.
 
 ## AGENTS.md
 

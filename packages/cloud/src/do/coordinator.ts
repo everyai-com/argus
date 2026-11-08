@@ -49,6 +49,17 @@ const LAUNCH_INTERVAL_MS = 400;
 // Beyond this queued wait the burst is too deep — refuse the token so the caller
 // backpressures (429) rather than holding a request open for a minute.
 const MAX_LAUNCH_WAIT_MS = 30_000;
+// A parked Chromium dies once its 10-min keep_alive lapses with nobody
+// connected. Handing out a dead id costs the borrower a failed connect AND a
+// cold launch (observed live: 21 leases on a "13 warm" pool cost 20 launches),
+// so entries are dropped a minute before that.
+const WARM_MAX_AGE_MS = 540_000;
+
+/** A parked browser and when it was parked. Legacy entries were bare ids. */
+interface WarmEntry {
+  id: string;
+  at: number;
+}
 
 interface Stats {
   acquires: number;
@@ -78,9 +89,12 @@ export class Coordinator extends DurableObject<Env> {
 
   /** A tenant's quota — the registry record, or the admin default for `_admin`. */
   private quotaFor(id: string, tenants: Record<string, Tenant>): { reserved: number; maxBurst: number; disabled: boolean } {
-    if (id === ADMIN_TENANT || !tenants[id]) {
+    if (id === ADMIN_TENANT) {
       return { reserved: 0, maxBurst: this.maxSessions(), disabled: false };
     }
+    // Not in the registry = deleted (its token can live on in isolate caches for
+    // up to 60s). Refuse — never fall through to the admin's whole-cap quota.
+    if (!tenants[id]) return { reserved: 0, maxBurst: 0, disabled: true };
     const t = tenants[id];
     return { reserved: t.reserved, maxBurst: t.maxBurst, disabled: t.disabled };
   }
@@ -201,14 +215,26 @@ export class Coordinator extends DurableObject<Env> {
       // A tenant below its reserved floor is always admitted: Σreserved ≤ cap is
       // enforced at registration, so its guaranteed slots are physically free.
       const usingGuarantee = mine < quota.reserved;
+      // The cap is physical (Browser Run account concurrency), so it binds even a
+      // floor. Floors are normally free because bursting leaves room for them;
+      // this only bites transiently, e.g. right after a floor is raised while the
+      // fleet is busy — and clears as bursters release.
+      if (usingGuarantee && global >= cap) {
+        verdict = { ok: false, active: global, reason: "fleet_saturated" };
+        return;
+      }
       if (!usingGuarantee) {
         // Bursting: only take capacity that isn't promised to other tenants'
         // still-unused reservations. reject if the fleet is saturated once every
         // floor is honoured.
         let unusedReservations = 0;
         for (const [tid, t] of Object.entries(tenants)) {
+          // A disabled tenant can't use its floor, and a floor above maxBurst is
+          // unreachable — neither may hold slots back from everyone else.
+          if (t.disabled) continue;
+          const floor = Math.min(t.reserved, t.maxBurst);
           const used = tcounts[tid] ?? 0;
-          if (t.reserved > used) unusedReservations += t.reserved - used;
+          if (floor > used) unusedReservations += floor - used;
         }
         if (global + unusedReservations >= cap) {
           verdict = { ok: false, active: global, reason: "fleet_saturated" };
@@ -224,9 +250,7 @@ export class Coordinator extends DurableObject<Env> {
       if ((await this.ctx.storage.getAlarm()) === null) {
         await this.ctx.storage.setAlarm(Date.now() + RECONCILE_MS);
       }
-      const warm = (await this.ctx.storage.get<string[]>(WARM_KEY)) ?? [];
-      const warmSessionId = warm.shift();
-      if (warmSessionId !== undefined) await this.ctx.storage.put(WARM_KEY, warm);
+      const warmSessionId = await this.takeWarm();
       verdict = { ok: true, active: global + 1, warmSessionId };
     });
 
@@ -247,8 +271,10 @@ export class Coordinator extends DurableObject<Env> {
   private async releaseSession(body: Record<string, unknown>): Promise<Response> {
     const { sessionId, warmSessionId } = body as { sessionId: string; warmSessionId?: string };
     let parked = false;
+    let existed = false;
     await this.ctx.blockConcurrencyWhile(async () => {
       const rec = await this.ctx.storage.get<SessionInfo>(`session:${sessionId}`);
+      existed = rec !== undefined;
       await this.ctx.storage.delete(`session:${sessionId}`);
       if (rec) {
         const count = (await this.ctx.storage.get<number>(COUNT_KEY)) ?? 1;
@@ -260,21 +286,25 @@ export class Coordinator extends DurableObject<Env> {
       }
       parked = await this.parkWarm(warmSessionId);
     });
-    await this.bumpStat("releases");
+    // A repeat release (DELETE after the alarm, a retried DELETE) frees nothing.
+    if (existed) await this.bumpStat("releases");
     return json({ ok: true, parked });
   }
 
   private async list(tenantId?: string): Promise<Response> {
     const all = await this.ctx.storage.list<SessionInfo>({ prefix: "session:" });
     const now = Date.now();
-    const list = [...all.values()].filter(
+    const live = [...all.values()].filter(
       (s) =>
         !s.released &&
         new Date(s.expiresAt).getTime() > now &&
         (!tenantId || (s.tenantId ?? ADMIN_TENANT) === tenantId)
     );
-    const warm = (await this.ctx.storage.get<string[]>(WARM_KEY)) ?? [];
-    return json({ sessions: list, warm: warm.length, max: this.maxSessions() });
+    // Batch slots hold capacity but aren't addressable — list them as a count,
+    // not as sessions an agent would try (and fail) to drive.
+    const list = live.filter((s) => s.kind !== "batch");
+    const warm = await this.warmEntries();
+    return json({ sessions: list, batch: live.length - list.length, warm: warm.length, max: this.maxSessions() });
   }
 
   private async owns(body: Record<string, unknown>): Promise<Response> {
@@ -289,6 +319,8 @@ export class Coordinator extends DurableObject<Env> {
       owns:
         Boolean(session) &&
         !session?.released &&
+        session?.kind !== "batch" &&
+        new Date(session?.expiresAt ?? 0).getTime() > Date.now() &&
         (admin === true || (session?.tenantId ?? ADMIN_TENANT) === tenantId),
     });
   }
@@ -319,9 +351,7 @@ export class Coordinator extends DurableObject<Env> {
   private async warmAcquire(): Promise<Response> {
     let warmSessionId: string | undefined;
     await this.ctx.blockConcurrencyWhile(async () => {
-      const warm = (await this.ctx.storage.get<string[]>(WARM_KEY)) ?? [];
-      warmSessionId = warm.shift();
-      if (warmSessionId !== undefined) await this.ctx.storage.put(WARM_KEY, warm);
+      warmSessionId = await this.takeWarm();
     });
     return json({ warmSessionId });
   }
@@ -380,12 +410,13 @@ export class Coordinator extends DurableObject<Env> {
   }
 
   private async tenantCreate(body: Record<string, unknown>): Promise<Response> {
-    const { id, name, reserved, maxBurst, tokenHash } = body as {
+    const { id, name, reserved, maxBurst, tokenHash, ownerUserId } = body as {
       id: string;
       name?: string;
       reserved: number;
       maxBurst: number;
       tokenHash: string;
+      ownerUserId?: string;
     };
     let result: { ok: boolean; tenant?: Tenant; error?: string } = { ok: false };
     await this.ctx.blockConcurrencyWhile(async () => {
@@ -411,6 +442,7 @@ export class Coordinator extends DurableObject<Env> {
         maxBurst,
         createdAt: new Date().toISOString(),
         disabled: false,
+        ...(ownerUserId ? { ownerUserId } : {}),
       };
       tenants[id] = tenant;
       await this.ctx.storage.put(TENANTS_KEY, tenants);
@@ -436,6 +468,10 @@ export class Coordinator extends DurableObject<Env> {
         return;
       }
       const next: Tenant = { ...t, ...patch };
+      if (next.maxBurst < next.reserved) {
+        result = { ok: false, error: `maxBurst ${next.maxBurst} must be ≥ reserved ${next.reserved}` };
+        return;
+      }
       if (patch.reserved !== undefined) {
         const reservedTotal =
           Object.values(tenants).reduce((n, o) => n + (o.id === id ? 0 : o.reserved), 0) +
@@ -458,13 +494,33 @@ export class Coordinator extends DurableObject<Env> {
 
   /** Point an existing tenant at a new token hash (rotation). */
   private async tenantSetToken(body: Record<string, unknown>): Promise<Response> {
-    const { id, tokenHash } = body as { id: string; tokenHash: string };
+    const { id, tokenHash, ownerUserId, ownerName } = body as {
+      id: string;
+      tokenHash: string;
+      ownerUserId?: string;
+      ownerName?: string;
+    };
     let result: { ok: boolean; error?: string } = { ok: false };
     await this.ctx.blockConcurrencyWhile(async () => {
       const tenants = await this.tenants();
-      if (!tenants[id]) {
+      const t = tenants[id];
+      if (!t) {
         result = { ok: false, error: "no such tenant" };
         return;
+      }
+      // Self-serve ids are derived from a prefix of the user id: a different
+      // account landing on the same id must never be handed this tenant's token.
+      if (ownerUserId) {
+        const owner = t.ownerUserId;
+        const legacyMatch = owner === undefined && ownerName !== undefined && t.name === ownerName;
+        if (owner !== ownerUserId && !legacyMatch) {
+          result = { ok: false, error: "tenant_owner_mismatch" };
+          return;
+        }
+        if (owner === undefined) {
+          tenants[id] = { ...t, ownerUserId }; // backfill legacy self-serve tenants
+          await this.ctx.storage.put(TENANTS_KEY, tenants);
+        }
       }
       const previous = await this.ctx.storage.get<string>(`tenanttok:${id}`);
       if (previous) await this.ctx.storage.delete(`tok:${previous}`);
@@ -478,7 +534,10 @@ export class Coordinator extends DurableObject<Env> {
 
   private async tenantDelete(body: Record<string, unknown>): Promise<Response> {
     const { id } = body as { id: string };
+    let live: SessionInfo[] = [];
     await this.ctx.blockConcurrencyWhile(async () => {
+      const all = await this.ctx.storage.list<SessionInfo>({ prefix: "session:" });
+      live = [...all.values()].filter((s) => (s.tenantId ?? ADMIN_TENANT) === id && s.kind !== "batch");
       const tenants = await this.tenants();
       delete tenants[id];
       await this.ctx.storage.put(TENANTS_KEY, tenants);
@@ -488,7 +547,16 @@ export class Coordinator extends DurableObject<Env> {
         await this.ctx.storage.delete(`tenanttok:${id}`);
       }
     });
-    return json({ ok: true });
+    // A deleted tenant keeps no browsers. Each session DO releases itself and
+    // calls back into /release, so this must run outside the gate above.
+    await Promise.all(
+      live.map((s) =>
+        this.env.BROWSER_SESSION.get(this.env.BROWSER_SESSION.idFromName(s.sessionId))
+          .fetch("https://do/release", { method: "POST" })
+          .catch(() => {})
+      )
+    );
+    return json({ ok: true, sessionsEnded: live.length });
   }
 
   private async tenantUsage(): Promise<TenantUsage[]> {
@@ -506,7 +574,7 @@ export class Coordinator extends DurableObject<Env> {
 
   private async buildStats(): Promise<CapacityStats> {
     const active = await this.liveCount();
-    const warm = (await this.ctx.storage.get<string[]>(WARM_KEY)) ?? [];
+    const warm = await this.warmEntries();
     const last = (await this.ctx.storage.get<number>("lastLaunchAt")) ?? 0;
     const stats = await this.stats();
     const tenants = await this.tenants();
@@ -550,10 +618,29 @@ export class Coordinator extends DurableObject<Env> {
    */
   private async parkWarm(warmSessionId: string | undefined): Promise<boolean> {
     if (!warmSessionId) return false;
-    const warm = (await this.ctx.storage.get<string[]>(WARM_KEY)) ?? [];
-    if (warm.includes(warmSessionId) || warm.length >= this.maxWarm()) return false;
-    warm.push(warmSessionId);
+    const warm = await this.warmEntries();
+    if (warm.some((w) => w.id === warmSessionId) || warm.length >= this.maxWarm()) return false;
+    warm.push({ id: warmSessionId, at: Date.now() });
     await this.ctx.storage.put(WARM_KEY, warm);
     return true;
+  }
+
+  /** Parked browsers still inside keep_alive, oldest first. Read-only. */
+  private async warmEntries(): Promise<WarmEntry[]> {
+    const raw = (await this.ctx.storage.get<Array<WarmEntry | string>>(WARM_KEY)) ?? [];
+    const cutoff = Date.now() - WARM_MAX_AGE_MS;
+    // Legacy bare ids have no park time — treat them as stale.
+    return raw.filter((w): w is WarmEntry => typeof w !== "string" && w.at > cutoff);
+  }
+
+  /**
+   * Take the most recently parked live browser (the likeliest to still be up),
+   * pruning expired entries. Must run inside a blockConcurrencyWhile gate.
+   */
+  private async takeWarm(): Promise<string | undefined> {
+    const warm = await this.warmEntries();
+    const taken = warm.pop();
+    await this.ctx.storage.put(WARM_KEY, warm);
+    return taken?.id;
   }
 }

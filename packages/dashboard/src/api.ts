@@ -34,6 +34,10 @@ export interface Finding {
   detail?: string;
   evidence?: { screenshotKey?: string; viewport?: string };
   decision?: { whatChanged: string; whereInSource?: string; nextAction: string };
+  judged?: { severity: string; confidence: number; model: string; note?: string };
+  rule?: string;
+  fingerprint?: string;
+  triage?: { state: "new" | "known" | "regression"; firstSeen?: string; occurrences?: number };
 }
 
 export interface Capacity {
@@ -70,14 +74,28 @@ function authHeaders(token: string): Record<string, string> {
   return token ? { authorization: `Bearer ${token}` } : {};
 }
 
+/** A request the API never answers must surface as an error, not an endless skeleton. */
+const REQUEST_TIMEOUT_MS = 20_000;
+
+async function timedFetch(path: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(path, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  } catch (err) {
+    if (err instanceof DOMException && (err.name === "TimeoutError" || err.name === "AbortError")) {
+      throw new Error(`the API did not answer ${path} within ${REQUEST_TIMEOUT_MS / 1000}s — retry, or check the worker`);
+    }
+    throw err;
+  }
+}
+
 export async function apiGet<T = any>(token: string, path: string): Promise<T> {
-  const res = await fetch(path, { headers: authHeaders(token) });
+  const res = await timedFetch(path, { headers: authHeaders(token) });
   if (!res.ok) throw new Error(`${res.status} ${await res.text().catch(() => "")}`.slice(0, 200));
   return res.json();
 }
 
 export async function apiSend(token: string, method: string, path: string): Promise<void> {
-  const res = await fetch(path, { method, headers: authHeaders(token) });
+  const res = await timedFetch(path, { method, headers: authHeaders(token) });
   if (!res.ok) throw new Error(`${res.status} ${await res.text().catch(() => "")}`.slice(0, 200));
 }
 

@@ -359,11 +359,15 @@ export async function triageFlowFailure(
   if (!bug || !sev || !human) return undefined;
   if (!BUG_CLASSES.includes(bug.choice as JudgeBugClass)) return undefined;
   if (!TRIAGE_SEVERITIES.includes(sev.choice as (typeof TRIAGE_SEVERITIES)[number])) return undefined;
+  // A near-flat distribution is a guess — attaching it would hand agents a
+  // confident-looking label ("major network_failure") the model never held.
+  const confidence = Math.min(bug.confidence, sev.confidence);
+  if (confidence < INCONCLUSIVE_BELOW) return undefined;
   return {
     bugClass: bug.choice as JudgeBugClass,
     severity: sev.choice as FailureTriage["severity"],
     needsHuman: human.noul >= 0.5,
-    confidence: Math.min(bug.confidence, sev.confidence),
+    confidence,
     model: "clef-flash",
     latencyMs: out.latencyMs,
   };

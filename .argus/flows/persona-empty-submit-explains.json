@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "name": "persona-empty-submit-explains",
+  "startUrl": "http://localhost:5199/",
+  "viewport": "desktop",
+  "steps": [
+    {
+      "action": {
+        "action": "wait",
+        "ms": 1500
+      },
+      "expect": []
+    },
+    {
+      "action": {
+        "action": "fill",
+        "value": "   "
+      },
+      "anchor": {
+        "testid": "new-task"
+      },
+      "expect": []
+    },
+    {
+      "action": {
+        "action": "click"
+      },
+      "anchor": {
+        "testid": "add-task"
+      },
+      "expect": [
+        {
+          "kind": "network",
+          "urlIncludes": "/api/tasks",
+          "method": "POST",
+          "minCount": 0,
+          "maxCount": 0,
+          "since": 0,
+          "cumulative": false
+        }
+      ]
+    }
+  ],
+  "success": [
+    {
+      "kind": "text",
+      "anchor": {
+        "role": "alert"
+      },
+      "includes": "task title"
+    }
+  ],
+  "dynamic": []
+}

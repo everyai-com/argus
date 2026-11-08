@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "id": "screen-fleet",
+  "description": "Shows latest verdict per project tile; the main landing screen after sign-in.",
+  "platform": "web",
+  "requires": [],
+  "steps": [
+    {
+      "kind": "open",
+      "url": "https://argus-cloud.everyai-com.workers.dev",
+      "at": "https://argus-cloud.everyai-com.workers.dev/?tab=account|Argus — browser verification console|742894fa7051"
+    },
+    {
+      "kind": "type",
+      "target": {
+        "role": "textbox",
+        "name": "API token",
+        "text": "",
+        "selector": "#argus-token",
+        "point": {
+          "x": 115.5,
+          "y": 802.625
+        }
+      },
+      "value": "{{ARGUS_TEST_TOKEN}}",
+      "submit": true,
+      "at": "https://argus-cloud.everyai-com.workers.dev/?tab=account|Argus — browser verification console|4d09339d728b"
+    },
+    {
+      "kind": "tap",
+      "target": {
+        "role": "button",
+        "name": "Fleet",
+        "text": "Fleet",
+        "selector": "div:nth-of-type(1) > button:nth-of-type(1)",
+        "point": {
+          "x": 115.5,
+          "y": 119.625
+        }
+      },
+      "at": "https://argus-cloud.everyai-com.workers.dev/|Argus — browser verification console|0810389fe108"
+    }
+  ],
+  "screenId": "fleet",
+  "expect": {
+    "elements": [
+      "Fleet",
+      "Runs",
+      "Sessions",
+      "Capacity",
+      "GitHub",
+      "Account"
+    ]
+  },
+  "createdAt": "2026-10-14T08:50:46.043Z",
+  "updatedAt": "2026-10-14T08:50:46.043Z",
+  "lastReplay": {
+    "at": "2026-10-14T09:07:15.006Z",
+    "ok": true,
+    "degraded": false
+  }
+}

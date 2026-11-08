@@ -11,8 +11,11 @@ the verdict comes from `argus_assert` and from flow `expect` / `success` predica
 1. `argus_flow_verify` — replay every saved flow in parallel cloud browsers. Fix each
    failure from its decision envelope (`whatChanged → nextAction`), then re-verify.
 2. `argus_audit` on the pages you changed — treat critical/major findings (a11y, visual
-   diff, perf, broken links) as part of the task, not follow-ups.
+   diff, perf, broken links) and `state/*` impossible states as part of the task, not
+   follow-ups. `design/*` is craft feedback, never a blocker.
 3. Built a new user-facing feature? Drive it once under `argus_record`, then
    `argus_flow_save` with network/route predicates — the suite must grow with the app.
-4. Report the **weakest** tier the verdict rests on. Missing evidence is
+4. Refactoring broadly? Run `argus untangle --preview "<cmd>"` (or hold your own
+   refactor to the same bar: every flow that passed before must pass after).
+5. Report the **weakest** tier the verdict rests on. Missing evidence is
    `coverage: partial`, never a pass.

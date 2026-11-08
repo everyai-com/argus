@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "name": "persona-data-survives-reload",
+  "startUrl": "http://localhost:5199/",
+  "viewport": "desktop",
+  "steps": [
+    {
+      "action": {
+        "action": "wait",
+        "ms": 1500
+      },
+      "expect": []
+    },
+    {
+      "action": {
+        "action": "fill",
+        "value": "Persist me"
+      },
+      "anchor": {
+        "testid": "new-task"
+      },
+      "expect": []
+    },
+    {
+      "action": {
+        "action": "click"
+      },
+      "anchor": {
+        "testid": "add-task"
+      },
+      "expect": [
+        {
+          "kind": "network",
+          "urlIncludes": "/api/tasks",
+          "method": "POST",
+          "status": 201,
+          "minCount": 1,
+          "maxCount": 1,
+          "since": 0,
+          "cumulative": false
+        }
+      ]
+    },
+    {
+      "action": {
+        "action": "reload"
+      },
+      "expect": []
+    },
+    {
+      "action": {
+        "action": "wait",
+        "ms": 1500
+      },
+      "expect": []
+    }
+  ],
+  "success": [
+    {
+      "kind": "text",
+      "anchor": {
+        "testid": "task-list"
+      },
+      "includes": "Persist me"
+    }
+  ],
+  "dynamic": []
+}

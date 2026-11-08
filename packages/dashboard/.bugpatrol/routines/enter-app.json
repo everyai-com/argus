@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "id": "enter-app",
+  "description": "Open https://argus-cloud.everyai-com.workers.dev, type {{ARGUS_TEST_TOKEN}} into the API token field in the left rail with submit:true, then click Fleet tab.",
+  "platform": "web",
+  "requires": [
+    "screen-fleet"
+  ],
+  "steps": [],
+  "expect": {
+    "elements": [
+      "Fleet",
+      "Runs",
+      "Sessions",
+      "Capacity",
+      "GitHub",
+      "Account"
+    ]
+  },
+  "createdAt": "2026-10-14T08:50:50.558Z",
+  "updatedAt": "2026-10-14T08:50:50.558Z",
+  "lastReplay": {
+    "at": "2026-10-14T09:07:15.009Z",
+    "ok": true,
+    "degraded": false
+  }
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Predicate } from "@argus/shared";
-import { evalPredicate, levenshtein, nearestMatch, weakestTier, type EventBuffers } from "./verify";
+import { evalPredicate, judgeRows, levenshtein, nearestMatch, tailUrl, weakestTier, type EventBuffers } from "./verify";
 
 const buffers = {
   network: [
@@ -34,6 +34,66 @@ describe("verification helpers", () => {
       ])
     ).toBe("dom");
     expect(weakestTier([])).toBe("dom");
+  });
+
+  it("shortens request URLs without passing off a cut as the real URL", () => {
+    // The live silent500 verdict used to read "saw: POST s://argus-demo…".
+    expect(tailUrl("https://argus-demo.everyai-com.workers.dev/api/tasks?fail=1")).toBe(
+      "https://argus-demo.everyai-com.workers.dev/api/tasks"
+    );
+    const long = tailUrl(`https://example.com/${"a".repeat(100)}/api/tasks`);
+    expect(long.startsWith("…")).toBe(true);
+    expect(long.endsWith("/api/tasks")).toBe(true);
+    expect(long.length).toBe(80);
+  });
+
+  describe("evidence gaps (ring eviction / DO restart)", () => {
+    const gapped: EventBuffers = { ...buffers, lostThrough: { network: 50, console: 50 } };
+
+    it("refuses to call a window clean when its events may be missing", async () => {
+      const r = await evalPredicate(page, gapped, { kind: "console-clean", since: 10 } as Predicate);
+      expect(r.pass).toBe(false);
+      expect(r.evidence).toContain("unverifiable");
+      // A cursor past the gap sees everything — clean stands.
+      const fresh = await evalPredicate(page, gapped, { kind: "console-clean", since: 60 } as Predicate);
+      expect(fresh.pass).toBe(true);
+    });
+
+    it("keeps positive evidence but not absence or ceiling claims", async () => {
+      const seen = { kind: "network", urlIncludes: "/api/orders", minCount: 1, since: 0 } as Predicate;
+      expect((await evalPredicate(page, gapped, seen)).pass).toBe(true);
+      const capped = { ...seen, maxCount: 1 } as Predicate;
+      expect((await evalPredicate(page, gapped, capped)).pass).toBe(false);
+      const missing = { kind: "network", urlIncludes: "/api/never", minCount: 1, since: 0 } as Predicate;
+      const r = await evalPredicate(page, gapped, missing);
+      expect(r.pass).toBe(false);
+      expect(r.evidence).toContain("unverifiable");
+    });
+  });
+
+  it("fails `hidden` when the anchor cannot be evaluated at all", async () => {
+    // e.g. "Execution context was destroyed" mid-navigation — used to read as hidden ✓.
+    const broken = {
+      ...page,
+      getByTestId: () => ({
+        count: async () => {
+          throw new Error("Execution context was destroyed");
+        },
+      }),
+    } as any;
+    const r = await evalPredicate(broken, buffers, { kind: "hidden", anchor: { testid: "modal" } } as Predicate);
+    expect(r.pass).toBe(false);
+    expect(r.evidence).toContain("could not evaluate");
+  });
+
+  it("names what it saw when a network expectation fails", async () => {
+    const failed = await evalPredicate(
+      page,
+      { network: [{ seq: 1, method: "POST", url: "https://x/api/orders?retry=1", status: 500, failed: false }], console: [] },
+      { kind: "network", urlIncludes: "/api/orders", method: "POST", status: 201, minCount: 1, since: 0 } as Predicate
+    );
+    expect(failed.pass).toBe(false);
+    expect(failed.evidence).toContain("saw: POST https://x/api/orders → 500");
   });
 });
 
@@ -175,5 +235,47 @@ describe("storage predicate", () => {
     });
     expect(r.pass).toBe(false);
     expect(r.evidence).toContain("could not read");
+  });
+});
+
+describe("judgeRows", () => {
+  const item = { css: "tbody tr" };
+  const rows = (extra: Partial<Extract<Predicate, { kind: "rows" }>>) =>
+    ({ kind: "rows", item, ...extra }) as Extract<Predicate, { kind: "rows" }>;
+  const snaps = new Map([["before", ["Acme Corp  open", "Beta LLC open", "Acme West closed"]]]);
+
+  it("passes a filter that kept only matching rows and removed some", () => {
+    const r = judgeRows(["Acme Corp open", "Acme West closed"], rows({ every: { includes: "acme" }, fewerThan: "before" }), snaps);
+    expect(r).toMatchObject({ pass: true, tier: "dom" });
+  });
+
+  it("fails an ignored filter — the unfiltered list still contains a stray row", () => {
+    const r = judgeRows(snaps.get("before")!, rows({ every: { includes: "Acme" }, fewerThan: "before" }), snaps);
+    expect(r.pass).toBe(false);
+    expect(r.evidence).toContain("Beta LLC");
+  });
+
+  it("fails as unverifiable on zero rows unless emptiness is the claim", () => {
+    expect(judgeRows([], rows({ every: { includes: "x" } }), snaps).evidence).toMatch(/unverifiable/);
+    expect(judgeRows([], rows({ none: { includes: "x" } }), snaps).pass).toBe(false);
+    expect(judgeRows([], rows({ maxCount: 0 }), snaps).pass).toBe(true);
+  });
+
+  it("fails as unverifiable when the named snapshot was never taken", () => {
+    const r = judgeRows(["a"], rows({ fewerThan: "missing" }), snaps);
+    expect(r).toMatchObject({ pass: false });
+    expect(r.evidence).toMatch(/unverifiable: no snapshot "missing"/);
+  });
+
+  it("fails a next page that only repeats page one (whitespace ignored)", () => {
+    expect(judgeRows(["Acme Corp open"], rows({ notSubsetOf: "before" }), snaps).pass).toBe(false);
+    expect(judgeRows(["Acme Corp open", "Gamma Inc"], rows({ notSubsetOf: "before" }), snaps).pass).toBe(true);
+  });
+
+  it("some + someNot prove a value splits the set", () => {
+    const split = rows({ some: { includes: "acme" }, someNot: { includes: "acme" } });
+    expect(judgeRows(snaps.get("before")!, split, snaps).pass).toBe(true);
+    expect(judgeRows(["Acme 1", "Acme 2"], split, snaps).pass).toBe(false);
+    expect(judgeRows(["Beta 1", "Beta 2"], split, snaps).pass).toBe(false);
   });
 });

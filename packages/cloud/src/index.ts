@@ -10,25 +10,33 @@
  * global ARGUS_TOKEN is the admin tenant). Tenant lookups are hashed and
  * cached in-isolate so the hot path doesn't hit the Coordinator every request.
  */
+import { getPersonaRun, listPersonaRuns, savePersonaRun, summarize } from "./personas";
 import { Hono } from "hono";
 import { z } from "zod";
 import {
   ActorSchema,
   AuditRequestSchema,
   apiError,
+  CrawlRequestSchema,
   CreateTenantRequestSchema,
   FlowSchema,
+  HttpUrlSchema,
   LeaseRequestSchema,
   SmokeRequestSchema,
+  TriageUpdateSchema,
   UpdateTenantRequestSchema,
   type SessionInfo,
+  PersonaRunUploadSchema,
 } from "@argus/shared";
 import type { Env } from "./env";
 import { deleteAuthProfile, listAuthProfiles } from "./auth-store";
 import { fleetView, listRuns, writeRunMeta } from "./runs";
 import { runSmoke } from "./smoke";
 import { runAudit } from "./audit";
+import { runCrawl } from "./crawl";
 import { replayFlow, verifyFlows } from "./flows";
+import { FleetBusyError } from "./pool";
+import { hostKeyOf, loadTriage, setTriage } from "./triage";
 import { handleGitHubEvent, verifyGitHubWebhook } from "./github-app";
 import { renderEvidencePage, serveEvidenceArtifact, verifyEvidenceSignature } from "./evidence";
 import { handleMcp } from "./mcp";
@@ -196,14 +204,27 @@ app.post("/api/mcp-token", async (c) => {
       reserved: 0,
       maxBurst: 10,
       tokenHash,
+      ownerUserId: session.user.id,
     }),
   });
   if (!created.ok) {
     // The account already has a tenant — rotate its token rather than fail.
     const rotated = await coord.fetch("https://do/tenant-set-token", {
       method: "POST",
-      body: JSON.stringify({ id: tenantId, tokenHash }),
+      body: JSON.stringify({
+        id: tenantId,
+        tokenHash,
+        ownerUserId: session.user.id,
+        ownerName: session.user.email,
+      }),
     });
+    if (rotated.status === 409 && (await rotated.clone().text()).includes("tenant_owner_mismatch")) {
+      // Prefix collision with another account — never rotate their token.
+      return c.json(
+        apiError("tenant_id_collision", "this account's tenant id collides with another account's — contact support", { retryable: false }),
+        409
+      );
+    }
     if (!rotated.ok) return c.json(apiError("mint_failed", await rotated.text()), 500);
   }
 
@@ -356,7 +377,12 @@ app.post("/v1/lease", async (c) => {
   if (!gate.ok) return new Response(gate.body, { status: gate.status, headers: { "content-type": "application/json" } });
   const { warmSessionId } = (await gate.json()) as { warmSessionId?: string };
 
-  const stub = c.env.BROWSER_SESSION.get(c.env.BROWSER_SESSION.idFromName(sessionId));
+  // The hint only matters here, where the session's DO is first created.
+  const hint = c.env.ARGUS_SESSION_LOCATION as DurableObjectLocationHint | undefined;
+  const stub = c.env.BROWSER_SESSION.get(
+    c.env.BROWSER_SESSION.idFromName(sessionId),
+    hint ? { locationHint: hint } : undefined
+  );
   const res = await stub.fetch("https://do/init", {
     method: "POST",
     body: JSON.stringify({ sessionId, tenantId: tenant.id, ...req, warmSessionId }),
@@ -427,6 +453,7 @@ app.post("/v1/smoke", async (c) => {
     const report = await runSmoke(c.env, parsed.data, c.get("tenant").id);
     return c.json(report);
   } catch (err) {
+    if (err instanceof FleetBusyError) return c.json(apiError(err.reason, err.message), 429);
     return c.json(apiError("smoke_failed", String(err).slice(0, 500)), 500);
   }
 });
@@ -453,7 +480,21 @@ app.post("/v1/audit", async (c) => {
     const report = await runAudit(c.env, parsed.data, c.get("tenant").id);
     return c.json(report);
   } catch (err) {
+    if (err instanceof FleetBusyError) return c.json(apiError(err.reason, err.message), 429);
     return c.json(apiError("audit_failed", String(err).slice(0, 500)), 500);
+  }
+});
+
+// --- crawl: every reachable page, in parallel, detectors on each -------------
+
+app.post("/v1/crawl", async (c) => {
+  const parsed = CrawlRequestSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json(apiError("bad_request", parsed.error.message), 400);
+  try {
+    return c.json(await runCrawl(c.env, parsed.data, c.get("tenant").id));
+  } catch (err) {
+    if (err instanceof FleetBusyError) return c.json(apiError(err.reason, err.message), 429);
+    return c.json(apiError("crawl_failed", String(err).slice(0, 500)), 500);
   }
 });
 
@@ -477,6 +518,7 @@ app.post("/v1/flow/replay", async (c) => {
     });
     return c.json(result);
   } catch (err) {
+    if (err instanceof FleetBusyError) return c.json(apiError(err.reason, err.message), 429);
     return c.json(apiError("replay_failed", String(err).slice(0, 500)), 500);
   }
 });
@@ -485,13 +527,18 @@ const VerifyRequestSchema = z.object({
   flows: z.array(FlowSchema).min(1).max(50),
   concurrency: z.number().int().min(1).max(8).default(4),
   /** Re-home the whole suite onto another environment (deploy gating). */
-  baseUrl: z.string().url().optional(),
+  baseUrl: HttpUrlSchema.optional(),
   /** Tag the run so the dashboard can group verdicts per app. */
   project: z.string().max(60).optional(),
   /** Who/what triggered the run (`cli`, `mcp`, `ci:…`, `agent:…`) — run attribution. */
   actor: ActorSchema.optional(),
   /** Attach vision-judge triage to failures. Default true; false = pure deterministic. */
   judge: z.boolean().default(true),
+  /**
+   * Re-run each failed flow once; only failures that repeat count (default
+   * true). Disagreeing re-runs are reported as `flaky` and never fail the suite.
+   */
+  confirmFailures: z.boolean().default(true),
 });
 
 app.post("/v1/flows/verify", async (c) => {
@@ -506,7 +553,8 @@ app.post("/v1/flows/verify", async (c) => {
       parsed.data.concurrency,
       parsed.data.baseUrl,
       tenantId,
-      parsed.data.judge
+      parsed.data.judge,
+      { confirm: parsed.data.confirmFailures }
     );
     // Persist the consolidated verdict for the dashboard's run history.
     const runId = crypto.randomUUID().slice(0, 8);
@@ -541,6 +589,47 @@ app.post("/v1/flows/verify", async (c) => {
   }
 });
 
+// --- triage memory: what the team decided about each finding ----------------
+
+/** Every finding Argus remembers for a host, with its status and history. */
+app.get("/v1/findings/triage", async (c) => {
+  const host = c.req.query("host");
+  if (!host) return c.json(apiError("bad_request", "host query param required (a host or a URL on it)"), 400);
+  const records = await loadTriage(c.env, c.get("tenant").id, hostKeyOf(host));
+  const status = c.req.query("status");
+  const list = Object.entries(records)
+    .filter(([, r]) => !status || r.status === status)
+    .map(([fingerprint, r]) => ({ fingerprint, ...r }))
+    .sort((a, b) => b.lastSeen.localeCompare(a.lastSeen));
+  return c.json({ host: hostKeyOf(host), findings: list });
+});
+
+/** A human decision: dismiss a finding (it stops failing runs) or reopen it. */
+app.post("/v1/findings/triage", async (c) => {
+  const parsed = TriageUpdateSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json(apiError("bad_request", parsed.error.message), 400);
+  const { host, fingerprint, status, reason } = parsed.data;
+  const rec = await setTriage(c.env, c.get("tenant").id, hostKeyOf(host), fingerprint, status, reason);
+  if (!rec) return c.json(apiError("not_found", `no finding ${fingerprint} on ${hostKeyOf(host)}`), 404);
+  return c.json({ fingerprint, ...rec });
+});
+
+// --- persona launch QA (argus personas uploads, dashboard reads) ------------
+
+app.post("/v1/personas", async (c) => {
+  const parsed = PersonaRunUploadSchema.safeParse(await c.req.json().catch(() => undefined));
+  if (!parsed.success) return c.json(apiError("bad_request", parsed.error.issues[0]?.message ?? "invalid persona run"), 400);
+  const run = await savePersonaRun(c.env, c.get("tenant").id, parsed.data);
+  return c.json(summarize(run), 201);
+});
+
+app.get("/v1/personas", async (c) => c.json({ runs: await listPersonaRuns(c.env, c.get("tenant").id) }));
+
+app.get("/v1/personas/:id", async (c) => {
+  const run = await getPersonaRun(c.env, c.get("tenant").id, c.req.param("id"));
+  return run ? c.json(run) : c.json(apiError("not_found"), 404);
+});
+
 // --- run history (powers the dashboard, tenant-scoped) ----------------------
 
 app.get("/v1/runs", async (c) => {
@@ -565,7 +654,7 @@ app.get("/v1/run/:id", async (c) => {
   const prefix = `tenants/${owner}/runs/${runId}/`;
   const objects = await c.env.ARTIFACTS.list({ prefix });
   const result: Record<string, unknown> = { runId, files: objects.objects.map((o) => o.key) };
-  for (const name of ["report.json", "audit-report.json", "flows-verdict.json"]) {
+  for (const name of ["report.json", "audit-report.json", "flows-verdict.json", "crawl-report.json"]) {
     const obj = await c.env.ARTIFACTS.get(`${prefix}${name}`);
     if (obj) result[name.replace(".json", "").replace("-", "_")] = await obj.json();
   }

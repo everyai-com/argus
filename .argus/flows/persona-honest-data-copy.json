@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "name": "persona-honest-data-copy",
+  "startUrl": "http://localhost:5199/",
+  "viewport": "desktop",
+  "steps": [
+    {
+      "action": {
+        "action": "wait",
+        "ms": 1500
+      },
+      "expect": []
+    }
+  ],
+  "success": [
+    {
+      "kind": "text",
+      "anchor": {
+        "css": "footer"
+      },
+      "includes": "first two tasks are examples"
+    },
+    {
+      "kind": "text",
+      "anchor": {
+        "css": "footer"
+      },
+      "includes": "sent to the demo server"
+    }
+  ],
+  "dynamic": []
+}

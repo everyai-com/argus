@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "deploy": "wrangler deploy"
+    "deploy": "vite build && wrangler deploy"
   },
   "dependencies": {
     "@argus/sdk": "workspace:*",
