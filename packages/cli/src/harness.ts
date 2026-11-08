@@ -87,7 +87,9 @@ routes, API handlers, or user-facing behavior — before declaring the work done
 2. Run \`argus_flow_verify\` (MCP) to replay all saved flows. Fix every failure
    from its decision envelope (whatChanged → nextAction), then re-verify.
 3. Run \`argus_audit\` on changed pages — treat critical/major findings
-   (a11y, visual diff, perf) as part of the task, not follow-ups.
+   (a11y, visual diff, perf) and impossible UI states (\`state/*\`: loading
+   beside an error, "empty" beside rows) as part of the task, not follow-ups.
+   \`design/*\` findings are craft feedback: fix them when you touch that UI.
 4. When you build a NEW user-facing feature, drive it once with argus tools
    under \`argus_record\`, then \`argus_flow_save\` with network/route success
    predicates — the test suite must grow with the app.
@@ -95,6 +97,8 @@ routes, API handlers, or user-facing behavior — before declaring the work done
    from the environment at replay time. If a replay reports missing values,
    ASK THE USER for them (never invent or hard-code secrets in flow files).
 6. A task is only done when flows pass with consequence-tier evidence.
+7. A large refactor? \`argus untangle --preview "<cmd>"\` holds it to the suite:
+   every flow that passes before must pass on a preview of the branch after.
 `;
 
 /** The built argus-mcp entrypoint that ships alongside this CLI build. */

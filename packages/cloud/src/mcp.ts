@@ -186,7 +186,7 @@ WEAKEST evidence tier it rests on; never upgrade it. Release every session.`,
 
   tool(
     "argus_assert",
-    "Assert evidence-tiered predicates: network, console-clean, route, stream, storage, visible/hidden/text, and (with the SDK) signal/state. Compose with allOf/anyOf. The verdict reports the WEAKEST tier it rests on — prefer network/route/signal over DOM presence.",
+    "Assert evidence-tiered predicates: network, console-clean, route, stream, storage, visible/hidden/text, rows (every/none/some/someNot over all matching elements; zero rows never passes unless maxCount:0), and (with the SDK) signal/state. Compose with allOf/anyOf. The verdict reports the WEAKEST tier it rests on — prefer network/route/signal over DOM presence.",
     { sessionId: z.string(), predicates: z.array(PredicateSchema).min(1).max(20) },
     async ({ sessionId, predicates }) =>
       jsonResult(await call(`/v1/session/${sessionId}/assert`, { method: "POST", body: JSON.stringify({ predicates }) }))
@@ -236,7 +236,7 @@ WEAKEST evidence tier it rests on; never upgrade it. Release every session.`,
 
   tool(
     "argus_audit",
-    "Full UX/visual audit: axe-core a11y, perf (FCP/LCP/CLS), broken links, overflow, visual regression.",
+    "Full UX/visual audit: axe-core a11y, perf (FCP/LCP/CLS), broken links, overflow, layout detectors, impossible UI states (state/*, treat as bugs), design-craft feedback (design/*, advisory), visual regression.",
     {
       url: z.string().url(),
       viewports: z.array(ViewportNameSchema).optional(),
@@ -298,7 +298,7 @@ WEAKEST evidence tier it rests on; never upgrade it. Release every session.`,
 
   tool(
     "argus_flow_save",
-    "Save a deterministic flow for this tenant (server-side). Provide the steps (usually from argus_record stop, with per-step expect predicates) and success predicates — prefer network/route consequences over DOM presence.",
+    "Save a deterministic flow for this tenant (server-side). Provide the steps (usually from argus_record stop, with per-step expect predicates) and success predicates — prefer network/route consequences over DOM presence. Search/filter journeys must discriminate: snapshot before, precondition rows{some,someNot}, success rows{every, fewerThan}.",
     {
       name: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/),
       startUrl: z.string().url(),

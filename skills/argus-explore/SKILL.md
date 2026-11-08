@@ -27,7 +27,14 @@ deterministic flows in `.argus/flows/`.
      (with status and cardinality, e.g. exactly one POST 201);
    - `success` predicates for the golden end condition — prefer network+route,
      add a text/visible check only as a supplement.
-5. **Audit.** `argus_audit` for a11y/perf/links/visual baselines.
+   - search/filter/list journeys must **discriminate**: `snapshot` the rows
+     before filtering, a `precondition` `rows {some, someNot}` proving the value
+     splits them, success `rows {every, fewerThan: <snapshot>}`. "A row contains
+     V" passes on an ignored filter too — see docs/discriminating-cases.md.
+5. **Audit.** `argus_audit` for a11y/perf/links/visual baselines, impossible
+   UI states (`state/*` — bugs) and design-craft feedback (`design/*` —
+   advisory). Each act's `newLayoutIssues` also names any `state/*` rule the
+   action introduced: a spinner left beside an error is a finding.
 6. **Judge screenshots.** Look at each screenshot you took: broken layouts,
    overlap, illegible contrast, silly spacing. You are the visual judge — flag
    what a pixel-diff can't articulate.

@@ -258,7 +258,7 @@ registerTool(
 
 registerTool(
   "argus_assert",
-  "Assert evidence-tiered predicates over program truth: network (url/status/cardinality), console-clean, route, browser storage, visible/hidden/text, plus app signal/state (with the SDK). Compose them with allOf/anyOf. The verdict reports the WEAKEST evidence tier it rests on — prefer network/route/signal (consequence) over DOM presence.",
+  "Assert evidence-tiered predicates over program truth: network (url/status/cardinality), console-clean, route, browser storage, visible/hidden/text, rows (a claim over every matching element: every/none/some/someNot, min/maxCount — zero rows never passes unless maxCount:0), plus app signal/state (with the SDK). Compose them with allOf/anyOf. The verdict reports the WEAKEST evidence tier it rests on — prefer network/route/signal (consequence) over DOM presence.",
   { sessionId: z.string(), predicates: z.array(PredicateSchema).min(1).max(20) },
   async ({ sessionId, predicates }) =>
     jsonResult(await api("POST", `/v1/session/${sessionId}/assert`, { predicates }))
@@ -325,7 +325,7 @@ registerTool(
 
 registerTool(
   "argus_audit",
-  "Run the full UX/visual audit against a URL: axe-core accessibility (WCAG 2.1 A/AA), performance metrics (FCP/LCP/CLS), broken-link check, responsive overflow, and visual regression against stored baselines (pixel diff). Returns findings with decision envelopes. Set updateBaseline:true to approve the current look.",
+  "Run the full UX/visual audit against a URL: axe-core accessibility (WCAG 2.1 A/AA), performance metrics (FCP/LCP/CLS), broken-link check, responsive overflow, layout/content detectors, impossible UI states (state/*: loading+error, success+error, empty beside rows — treat as bugs), design-craft feedback (design/*: accent/radius/font sprawl, emoji chrome, AI-default gradient, duplicate labels, reduced motion — advisory, never blocking), and visual regression against stored baselines (pixel diff). Returns findings with decision envelopes. Set updateBaseline:true to approve the current look.",
   {
     url: z.string().url(),
     viewports: z.array(ViewportNameSchema).optional(),
@@ -561,7 +561,7 @@ registerTool(
 
 registerTool(
   "argus_flow_save",
-  "Persist a flow to .argus/flows/<name>.json (git-reviewed, replayable forever). Provide the steps (usually from argus_record stop, optionally with per-step expect predicates added) and the success predicates — the golden end condition, ideally network/route consequences rather than DOM presence. Event-window predicates (network/console-clean/stream/signal) in a step's expect observe only events AFTER that step started (replay sets since automatically — never hand-set it); add cumulative:true to observe the whole run so far. Success predicates always observe the whole run.",
+  "Persist a flow to .argus/flows/<name>.json (git-reviewed, replayable forever). Provide the steps (usually from argus_record stop, optionally with per-step expect predicates added) and the success predicates — the golden end condition, ideally network/route consequences rather than DOM presence. Event-window predicates (network/console-clean/stream/signal) in a step's expect observe only events AFTER that step started (replay sets since automatically — never hand-set it); add cumulative:true to observe the whole run so far. Success predicates always observe the whole run. For a search/filter/list journey, make it DISCRIMINATE: a step `snapshot {name,item}` before the filter, a `precondition` rows{some,someNot} proving the value splits the rows, and success rows{every, fewerThan: <snapshot>} — never bake row data into the file.",
   {
     name: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/),
     startUrl: z.string().url(),
