@@ -25,7 +25,9 @@ dashboard hosting), `packages/cli`, `packages/mcp`, `packages/dashboard`,
 - launch QA / self-healing: `argus personas <url> --goal "…"` (five users via your agent
   CLI, merged + ranked) · `argus fix [url] --preview "<cmd>" [--pr]` (confirmed failure →
   worktree fix → proven on a preview → draft PR) · `argus patrol <url> [--fix]` (re-verify
-  on every new commit to main)
+  on every new commit to main) · `argus untangle [url] --preview "<cmd>" [--pr]` (an agent
+  refactors the whole codebase with caldoai's untangle method; every flow that passes now
+  must still pass on the preview)
 - fleet ops: `argus capacity [--watch]` (live gauges) · `argus stress <N>` (load) ·
   `argus tenants list|create <id> --reserved R --burst B|update <id>|rm <id>` (admin token only)
 
@@ -147,7 +149,12 @@ dashboard hosting), `packages/cli`, `packages/mcp`, `packages/dashboard`,
   Effects come from the pure `actEffects`, shared by both backends.
 - `argus fix` ships a fix only when the flow passes on `--preview` of the
   fixed branch and nothing else breaks; edits under `.argus/` are refused;
-  a PR a human closed unmerged is never reopened. `argus patrol` advances
+  a PR a human closed unmerged is never reopened. `argus untangle` holds a
+  refactor to the suite: the contract is every flow that passes on the target
+  BEFORE; each must pass on `--preview` AFTER (confirmed failure → rejected,
+  flaky/untested → unverified, never a PR), edits under `.argus/` are refused,
+  no passing flow means no contract (refused). The decision log becomes the PR
+  body and is never committed. `argus patrol` advances
   its tested sha only after a run that actually tested. Effects carry `silentAction`,
   `failureShownAsSuccess` (own-origin request failed + page changed + no error
   shown), `newLayoutIssues` (detector rules the action added) and

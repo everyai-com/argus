@@ -33,6 +33,7 @@ import { wireHarnesses, mcpServerPath, parseInitArgs, splitCredentials, DEFAULT_
 import { parseTarget, scanLocalPorts } from "./target";
 import { runFixLoop, type FixDeps, type FixOutcome, type Suite } from "./fix";
 import { patrolTick, type PatrolState } from "./patrol";
+import { runUntangle, type UntangleOutcome } from "./untangle";
 import { PERSONAS, extractReport, mergeReports, personaPrompt, renderReport } from "./personas";
 import { compareVersions, npmLatest, validateFlowFile } from "./doctor";
 
@@ -566,9 +567,34 @@ function printFixOutcomes(outcomes: FixOutcome[]): void {
   }
 }
 
+/** Tracked source files of a checkout, for `argus untangle`'s special-case count. */
+async function readSources(dir: string): Promise<Array<{ path: string; text: string }>> {
+  const ls = spawnSync("git", ["ls-files"], { cwd: dir, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  if (ls.status !== 0) return [];
+  return ls.stdout
+    .split("\n")
+    .filter((f) => /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rb|rs|java|kt|swift|php|vue|svelte)$/.test(f))
+    .filter((f) => !/(^|\/)(dist|build|vendor|node_modules|public)\//.test(f) && !f.endsWith(".min.js"))
+    .flatMap((path) => {
+      try {
+        const text = readFileSync(join(dir, path), "utf8");
+        return text.length > 500_000 ? [] : [{ path, text }];
+      } catch {
+        return [];
+      }
+    });
+}
+
+function printUntangleOutcome(o: UntangleOutcome): void {
+  const mark = o.result === "pr" || o.result === "verified" ? green("✔") : o.result === "unverified" || o.result === "no-change" ? yellow("●") : red("✘");
+  console.log(`\n  ${mark} untangle: ${o.result}${o.branch ? ` ${dim(`(${o.branch})`)}` : ""} ${o.url ?? o.why ?? (o.result === "verified" ? "proven — re-run with --pr to open it" : "")}`);
+  if (o.contract) console.log(`    behavior: ${o.contract.kept}/${o.contract.total} flows still pass${o.contract.fixed.length ? ` · fixed: ${o.contract.fixed.join(", ")}` : ""}`);
+  if (o.specialCases?.after) console.log(`    special cases: ${o.specialCases.before.total} → ${o.specialCases.after.total}`);
+}
+
 /** Shared by fix and patrol: flag parsing, flows, repo root. Exits 2 on a usage problem. */
 function fixSetup(args: string[], cmd: string) {
-  const valued = new Set(["--agent", "--preview", "--max", "--every", "--branch"]);
+  const valued = new Set(["--agent", "--preview", "--max", "--every", "--branch", "--focus", "--timeout"]);
   const flag = (name: string) => {
     const i = args.indexOf(name);
     return i === -1 ? undefined : args[i + 1];
@@ -1720,6 +1746,36 @@ ${verifyStep}
       }
       break;
     }
+    case "untangle": {
+      // argus untangle [url|port] --preview "<cmd>" [--pr] [--comments] [--tests] [--focus "<area>"] [--agent "<cmd>"] [--timeout <min>]
+      const setup = fixSetup(args, "untangle");
+      const live = await ensureConfigured(cfg);
+      const { url, tunnel } = await resolveTarget(setup.raw, "untangle");
+      try {
+        const outcome = await runUntangle(
+          { ...fixDeps(live, setup.flows), readSources },
+          {
+            repo: setup.repo,
+            target: url,
+            agent: setup.agent,
+            preview: setup.preview,
+            openPr: setup.openPr,
+            comments: args.includes("--comments"),
+            tests: args.includes("--tests"),
+            focus: setup.flag("--focus"),
+            timeoutMin: Number(setup.flag("--timeout") ?? 120),
+          }
+        );
+        printUntangleOutcome(outcome);
+        tunnel?.child.kill();
+        // 0 proven or nothing to do · 1 behavior changed · 2 no contract · 4 unproven
+        const code = { pr: 0, verified: 0, "no-change": 0, rejected: 1, refused: 2, unverified: 4, "agent-failed": 4 }[outcome.result];
+        process.exit(code);
+      } finally {
+        tunnel?.child.kill();
+      }
+      break;
+    }
     case "patrol": {
       // argus patrol <url> [--every 30] [--branch main] [--fix [--preview "<cmd>"] [--pr]] [--once]
       // <url> is where the branch deploys (staging/preview): patrol re-verifies it on every new commit.
@@ -1832,6 +1888,11 @@ usage:
                                worktree → the flow must pass on --preview "<cmd that
                                prints the fixed build's URL>" → --pr opens a draft PR
                                (--agent "<cmd>", default: claude -p; --max N, default 3)
+  argus untangle [url|port]    an agent refactors the whole codebase (caldoai untangle
+                               method) in its own worktree; every flow that passes now
+                               must still pass on --preview "<cmd>" → --pr opens a draft
+                               PR with the decision log (--comments, --tests, --focus
+                               "<area>", --timeout <min>, default 120)
   argus personas <url> --goal "<first success>"
                                five first-time users (impatient, skeptic, phone on
                                slow 3G, literal reader, breaker) via your agent CLI;
