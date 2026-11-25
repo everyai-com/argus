@@ -20,6 +20,8 @@ dashboard hosting), `packages/cli`, `packages/mcp`, `packages/dashboard`,
 - live API: `https://argus-cloud.everyai-com.workers.dev` · token in `.argus/config.json` (gitignored)
 - demo: `pnpm --filter @argus/demo build && (cd apps/demo && pnpm preview)` (port 5199 is in vite.config; bare `vite` is not on PATH)
 - demo worker (live dogfood target): https://argus-demo.everyai-com.workers.dev · deploy with `pnpm --filter @argus/demo deploy` (builds + ships `worker.ts` + `./dist`); API logic is shared in `apps/demo/shared/api.ts` so preview and prod can't drift
+- e2e trial suite (the `e2e` runner, locators only, no model key): `E2E_TELEMETRY_DISABLED=1 pnpm --filter @argus/e2e-suite test:e2e` —
+  drives `apps/demo` and the console on the real Worker under local workerd; see `apps/e2e-suite/README.md`
 - tunnel for local testing: `argus tunnel 5199` (or `node packages/cli/dist/index.js ...`)
 - wire a project to Argus (MCP + verification steps): `argus init <api-url> <token> [--harness all]`
 - fleet ops: `argus capacity [--watch]` (live gauges) · `argus stress <N>` (load) ·

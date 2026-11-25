@@ -7,3 +7,6 @@ allowBuilds:
 minimumReleaseAgeExclude:
   - miniflare@5.20261001.0-alpha
   - wrangler@4.147.0
+  - '@e2e-dev/core@0.25.0'
+  - e2e@0.25.0
+  - '@e2e-dev/web@0.17.0'
