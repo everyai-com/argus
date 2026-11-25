@@ -1,0 +1,21 @@
+{
+  "name": "@argus/e2e-suite",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Trial: the e2e runner (https://github.com/e2e-inc/e2e) against the Argus demo app and console. Locators only \u2014 no model key.",
+  "scripts": {
+    "browsers": "e2e-web install chromium",
+    "test:demo": "pnpm --filter @argus/demo build && e2e run --config demo.config.ts",
+    "test:console": "e2e run --config console.config.ts",
+    "test:e2e": "pnpm test:demo && pnpm test:console",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@e2e-dev/core": "^0.25.0",
+    "@e2e-dev/web": "^0.17.0",
+    "@types/node": "^26.6.4",
+    "e2e": "0.25.0",
+    "typescript": "^7.0.2"
+  }
+}
