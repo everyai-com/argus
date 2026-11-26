@@ -16,6 +16,7 @@ import type { SmokeReport } from "@argus/shared";
 import { buildCfSaasFlows, probeApp } from "./preset";
 import { wireHarnesses, mcpServerPath, parseInitArgs } from "./harness";
 import { compareVersions, npmLatest, validateFlowFile } from "./doctor";
+import { formatFlowFailures } from "./flow-report";
 
 // --- tiny ANSI helpers (no deps) -------------------------------------------
 const isTTY = process.stdout.isTTY;
@@ -194,6 +195,13 @@ function loadFlowFiles(flowsPath: string): unknown[] {
     .map((file) => resolveEnvPlaceholders(JSON.parse(readFileSync(join(flowsPath, file), "utf8"))));
 }
 
+/** Print every non-passing flow: name, failing step, expected vs actual, evidence. */
+function printFlowFailures(cfg: Config, results: unknown, flows: unknown[], runId?: string): void {
+  for (const line of formatFlowFailures(results, flows, { api: cfg.api, runId })) {
+    console.log(`  ${line.startsWith("✘") ? red(line) : dim(line)}`);
+  }
+}
+
 interface LiveCheck {
   name: string;
   status: string;
@@ -284,6 +292,14 @@ async function main(): Promise<void> {
         console.log(`  ${mark} ${check.name}: ${check.status} ${dim(`(${check.detail})`)}`);
       }
       console.log();
+      // The gate's feedback: without this a red run names no flow and no cause.
+      const flowCheck = checks.find((c) => c.name === "flows");
+      const flowResults = (flowCheck?.report as { results?: unknown } | undefined)?.results;
+      if (flowCheck && flowCheck.status !== "pass" && flowCheck.status !== "skipped") {
+        console.log(bold("  Failed flows:"));
+        printFlowFailures(cfg, flowResults, flows, flowCheck.runId);
+        console.log();
+      }
       process.exit(ok ? 0 : 1);
       break;
     }
@@ -764,11 +780,8 @@ async function main(): Promise<void> {
             status: string;
             passed: number;
             failed: number;
-            results: Array<{
-              flow: string;
-              status: string;
-              decision?: { whatChanged: string; nextAction: string };
-            }>;
+            runId?: string;
+            results: unknown;
           }>(oc, "POST", "/v1/flows/verify", {
             flows,
             baseUrl: target,
@@ -780,11 +793,7 @@ async function main(): Promise<void> {
           console.log(
             `\n${flowsOk ? green(bold(" FLOWS PASS ")) : red(bold(" FLOWS FAIL "))} ${verdict.passed}/${flows.length}`
           );
-          for (const r of verdict.results) {
-            if (r.status === "ok") continue;
-            console.log(`  ${red("✘")} ${r.flow}`);
-            if (r.decision) console.log(`      ${dim("→ " + r.decision.nextAction)}`);
-          }
+          printFlowFailures(oc, verdict.results, flows, verdict.runId);
         }
 
         const ok = report.status === "pass" && flowsOk;
@@ -845,6 +854,7 @@ async function main(): Promise<void> {
       const verdict = await api<{
         status: string;
         summary: string;
+        runId?: string;
         results: Array<{ flow: string; status: string; durationMs: number; decision?: { whatChanged: string; nextAction: string } }>;
       }>(cfg, "POST", "/v1/flows/verify", {
         flows,
@@ -858,7 +868,10 @@ async function main(): Promise<void> {
       console.log(`\n${ok ? green(bold(" GATE PASS ")) : red(bold(" GATE FAIL "))} ${verdict.summary}\n`);
       for (const r of verdict.results) {
         console.log(`  ${r.status === "ok" ? green("✔") : red("✘")} ${r.flow} ${dim(`${(r.durationMs / 1000).toFixed(1)}s`)}`);
-        if (r.decision) console.log(`      ${dim(r.decision.whatChanged.slice(0, 120))}`);
+      }
+      if (!ok) {
+        console.log();
+        printFlowFailures(cfg, verdict.results, flows, verdict.runId);
       }
       if (ok && versionId) {
         console.log(`\n${dim("promote with:")} ${bold(`npx wrangler versions deploy ${versionId} -y`)}`);
