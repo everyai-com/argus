@@ -10,7 +10,7 @@ export interface FlowIssue {
   issue: string;
 }
 
-/** Step actions that must carry a semantic anchor (testid/role/text/css). */
+/** Step actions that must carry a semantic anchor (testid/role/label/placeholder/text/css). */
 const ANCHORED_ACTIONS = new Set(["fill", "click", "press", "hover", "select"]);
 
 /** Predicate kinds that must carry a semantic anchor. */
@@ -22,6 +22,8 @@ function hasAnchor(value: unknown): boolean {
   return (
     (typeof anchor.testid === "string" && anchor.testid.length > 0) ||
     (typeof anchor.role === "string" && anchor.role.length > 0) ||
+    (typeof anchor.label === "string" && anchor.label.length > 0) ||
+    (typeof anchor.placeholder === "string" && anchor.placeholder.length > 0) ||
     (typeof anchor.text === "string" && anchor.text.length > 0) ||
     (typeof anchor.css === "string" && anchor.css.length > 0)
   );
@@ -62,7 +64,7 @@ export function validateFlowFile(file: string, raw: unknown): FlowIssue[] {
         return;
       }
       if (ANCHORED_ACTIONS.has(actionName) && !hasAnchor((step as Record<string, unknown>).anchor)) {
-        bad(`steps[${i}]: "${actionName}" needs a semantic anchor (testid/role/text/css)`);
+        bad(`steps[${i}]: "${actionName}" needs a semantic anchor (testid/role/label/placeholder/text/css)`);
       }
     });
   }
@@ -80,7 +82,7 @@ export function validateFlowFile(file: string, raw: unknown): FlowIssue[] {
         return;
       }
       if (ANCHORED_PREDICATES.has(kind) && !hasAnchor((predicate as Record<string, unknown>).anchor)) {
-        bad(`success[${i}]: "${kind}" needs a semantic anchor (testid/role/text/css)`);
+        bad(`success[${i}]: "${kind}" needs a semantic anchor (testid/role/label/placeholder/text/css)`);
       }
     });
   }

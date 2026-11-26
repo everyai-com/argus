@@ -29,6 +29,7 @@ import {
   GRADE_APPLY_CONFIDENCE,
   NOISE_SUPPRESS_CONFIDENCE,
 } from "./judge";
+import { readHorizontalOverflow } from "@argus/core";
 import type { Env } from "./env";
 
 const AXE_SOURCE_URL = "https://cdn.jsdelivr.net/npm/axe-core@4.10.2/axe.min.js";
@@ -268,8 +269,8 @@ export async function runAudit(env: Env, req: AuditRequest, tenantId?: string): 
         }
 
         // ---- responsive overflow -----------------------------------------
-        const overflow = await page
-          .evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)
+        const overflow = await readHorizontalOverflow(page)
+          .then((r) => r.overflow)
           .catch(() => false);
         if (overflow && !overflowViewports.includes(viewport)) {
           overflowViewports.push(viewport);

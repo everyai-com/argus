@@ -15,14 +15,19 @@ import { acquirePooledBrowser, releasePooledBrowser } from "./pool";
 import type { Page, Locator } from "@cloudflare/playwright";
 import {
   VIEWPORTS,
-  type ConsoleEvent,
   type Flow,
   type FlowReplayResult,
-  type NetworkEvent,
   type Predicate,
   type PredicateResult,
-  type StreamEvent,
 } from "@argus/shared";
+import {
+  ambiguityDecision,
+  bindBuffers,
+  describeAnchor,
+  describeCandidates,
+  testidsOnPage,
+  type Buffers,
+} from "@argus/core";
 import { evalPredicate, nearestMatch, resolveAnchor, weakestTier } from "./verify";
 import { triageFlowFailure } from "./judge";
 import { hostOf, loadAuthProfile, saveAuthProfile } from "./auth-store";
@@ -43,95 +48,6 @@ export interface ReplayOutcome extends FlowReplayResult {
   stepResults?: Array<{ step: number; ok: boolean; note?: string }>;
   /** Set when the flow declared saveAuthAs and succeeded. */
   authSaved?: { name: string; cookies: number };
-}
-
-interface Buffers {
-  network: NetworkEvent[];
-  console: ConsoleEvent[];
-  stream: StreamEvent[];
-  seq: number;
-}
-
-/** A Playwright WebSocket frame payload, stringified and capped. */
-function framePayload(frame: unknown): string {
-  const payload = (frame as { payload?: unknown })?.payload;
-  if (payload === undefined || payload === null) return "";
-  return (typeof payload === "string" ? payload : String(payload)).slice(0, 500);
-}
-
-function bindBuffers(page: Page): Buffers {
-  const buf: Buffers = { network: [], console: [], stream: [], seq: 0 };
-  page.on("console", (msg) => {
-    const level = (["log", "info", "warn", "error"] as const).includes(msg.type() as never)
-      ? (msg.type() as "log" | "info" | "warn" | "error")
-      : "log";
-    buf.console.push({
-      seq: ++buf.seq,
-      level,
-      text: msg.text().slice(0, 500),
-      sourceUrl: msg.location()?.url || undefined,
-    });
-  });
-  page.on("pageerror", (err) => {
-    buf.console.push({ seq: ++buf.seq, level: "error", text: `Uncaught: ${String(err).slice(0, 500)}` });
-  });
-  page.on("response", (res) => {
-    const req = res.request();
-    buf.network.push({
-      seq: ++buf.seq,
-      method: req.method(),
-      url: req.url().slice(0, 300),
-      status: res.status(),
-      failed: res.status() >= 400,
-      resourceType: req.resourceType(),
-    });
-    if ((res.headers()["content-type"] ?? "").includes("text/event-stream")) {
-      buf.stream.push({
-        seq: ++buf.seq,
-        stream: "sse",
-        url: req.url().slice(0, 300),
-        direction: "open",
-        at: Date.now(),
-      });
-    }
-  });
-  page.on("requestfailed", (req) => {
-    buf.network.push({
-      seq: ++buf.seq,
-      method: req.method(),
-      url: req.url().slice(0, 300),
-      failed: true,
-      resourceType: req.resourceType(),
-    });
-  });
-  page.on("websocket", (ws) => {
-    const url = ws.url().slice(0, 300);
-    buf.stream.push({ seq: ++buf.seq, stream: "websocket", url, direction: "open", at: Date.now() });
-    ws.on("framesent", (frame) =>
-      buf.stream.push({
-        seq: ++buf.seq,
-        stream: "websocket",
-        url,
-        direction: "sent",
-        data: framePayload(frame),
-        at: Date.now(),
-      })
-    );
-    ws.on("framereceived", (frame) =>
-      buf.stream.push({
-        seq: ++buf.seq,
-        stream: "websocket",
-        url,
-        direction: "received",
-        data: framePayload(frame),
-        at: Date.now(),
-      })
-    );
-    ws.on("close", () =>
-      buf.stream.push({ seq: ++buf.seq, stream: "websocket", url, direction: "close", at: Date.now() })
-    );
-  });
-  return buf;
 }
 
 /**
@@ -175,57 +91,9 @@ async function evalAllSettled(
   return results;
 }
 
-async function candidatesOnPage(page: Page): Promise<string[]> {
-  return await page
-    .evaluate(() =>
-      (Array.from(document.querySelectorAll("[data-testid]")) as any[]).map((el) =>
-        String(el.getAttribute("data-testid"))
-      )
-    )
-    .catch(() => []);
-}
-
-/** Describe up to 5 matched elements so an ambiguous anchor names its candidates. */
-async function describeCandidates(locator: Locator, total: number): Promise<string[]> {
-  try {
-    const infos = (await locator.evaluateAll((els) =>
-      (els as unknown as any[]).slice(0, 5).map((el) => {
-        const text = String(el.textContent ?? "")
-          .replace(/\s+/g, " ")
-          .trim()
-          .slice(0, 60);
-        const testid = el.getAttribute("data-testid");
-        return `${String(el.tagName).toLowerCase()}${testid ? `[data-testid="${testid}"]` : ""}${text ? ` "${text}"` : ""}`;
-      })
-    )) as string[];
-    return total > infos.length ? [...infos, `+${total - infos.length} more`] : infos;
-  } catch {
-    return [];
-  }
-}
-
-/**
- * The ambiguity decision — pure so it's unit-testable without a browser.
- * An anchor matching N>1 elements is an error, never a guess: .first() would
- * silently drive the wrong element and bless a false green.
- */
-export function ambiguityDecision(
-  step: number,
-  from: string,
-  via: string,
-  count: number,
-  candidates: string[]
-): { verdict: "ambiguous_anchor"; whatChanged: string; suggestedFix: string; nextAction: string } {
-  const shown = candidates.length ? ` — candidates: ${candidates.join(" · ")}` : "";
-  return {
-    verdict: "ambiguous_anchor",
-    whatChanged: `step ${step}: anchor "${from}" (via ${via}) matched ${count} elements${shown}`,
-    suggestedFix:
-      "tighten the anchor until it matches exactly one element — prefer a unique data-testid, else role+name",
-    nextAction:
-      "disambiguate the anchor in the flow file (or remove the duplicate element from the page) and re-run",
-  };
-}
+// The ambiguity refusal lives in @argus/core (the local runner refuses the
+// same way); re-exported because replay is where the Worker's callers look.
+export { ambiguityDecision } from "@argus/core";
 
 /**
  * Re-home a flow onto another environment. A suite recorded against prod must
@@ -287,7 +155,7 @@ export async function replayFlow(
       if (step.anchor) {
         const { locator: found, via } = resolveAnchor(page, step.anchor);
         const matched = await found.count();
-        const from = step.anchor.testid ?? step.anchor.text ?? step.anchor.css ?? `${step.anchor.role}/${step.anchor.name}`;
+        const from = describeAnchor(step.anchor);
         if (matched > 1) {
           // Ambiguity is an error, never a guess.
           const key = await finalShot(env, owner, page, flow.name);
@@ -305,7 +173,7 @@ export async function replayFlow(
         if (matched === 0) {
           // Drift. Name it, find the nearest survivor, decide.
           const near = step.anchor.testid
-            ? nearestMatch(step.anchor.testid, await candidatesOnPage(page))
+            ? nearestMatch(step.anchor.testid, await testidsOnPage(page))
             : undefined;
           // A heal target must itself resolve to exactly one element — a
           // rebind onto an ambiguous (or vanished) id is a guess, not a fix.
