@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  ActResultSchema,
   ActorSchema,
+  FlowDraftRequestSchema,
   AnchorSchema,
   apiError,
   ApiErrorSchema,
@@ -153,5 +155,35 @@ describe("wire contract", () => {
   it("keeps actor tags short free-form attribution", () => {
     expect(ActorSchema.safeParse("agent:explorer-3").success).toBe(true);
     expect(ActorSchema.safeParse("x".repeat(81)).success).toBe(false);
+  });
+
+  it("keeps the pre-diff action result valid and accepts the added step and diff", () => {
+    const before = {
+      ok: true,
+      resolution: { via: "testid", matched: 1 },
+      effects: {
+        urlBefore: "https://a.test/",
+        urlAfter: "https://a.test/",
+        navigated: false,
+        domNodeDelta: 0,
+        newConsoleErrors: 0,
+        newNetworkFailures: 0,
+      },
+    };
+    expect(ActResultSchema.parse(before)).toEqual(before);
+    const after = ActResultSchema.parse({
+      ...before,
+      step: { action: { action: "click" }, anchor: { testid: "add-task" } },
+      diff: { added: ['li "Buy milk"'], removed: [], changed: [] },
+    });
+    expect(after.step).toEqual({ action: { action: "click" }, anchor: { testid: "add-task" }, expect: [] });
+    expect(
+      ActResultSchema.safeParse({ ...before, step: { action: { action: "click" }, anchor: {} } }).success
+    ).toBe(false);
+  });
+
+  it("takes a flow-draft request with safe defaults and a safe name only", () => {
+    expect(FlowDraftRequestSchema.parse({})).toEqual({ reset: false });
+    expect(FlowDraftRequestSchema.safeParse({ name: "../escape" }).success).toBe(false);
   });
 });

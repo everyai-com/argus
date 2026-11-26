@@ -326,11 +326,61 @@ export const ActEffectsSchema = z.object({
 });
 export type ActEffects = z.infer<typeof ActEffectsSchema>;
 
+/**
+ * Size limits of a screen diff. An action response must stay cheap to read, so
+ * every list is capped and says how much it left out instead of growing.
+ */
+export const SCREEN_DIFF_LIMITS = {
+  /** Entries per list (added / removed / changed) for a single action. */
+  perList: 12,
+  /** Entries per list for each step of a batch — up to 50 diffs ride one response. */
+  perListBatch: 6,
+  /** Characters of an element's text or value. */
+  text: 80,
+  /** Characters of one diff line. */
+  line: 200,
+  /** Elements one snapshot holds; a larger page yields `partial: true`. */
+  snapshotElements: 400,
+} as const;
+
+/**
+ * What changed on screen since the session's previous observation (the lease,
+ * or the action before this one). One line per element, in the grammar
+ * `tag[testid=… role=… name="…"] "text" value="…" (state)`; a changed element
+ * reads `tag[…]: text "before" → "after"`. Values of password fields are never
+ * present — such a field reads `value=[redacted]` once it holds anything.
+ */
+export const ScreenDiffSchema = z.object({
+  url: z.object({ from: z.string(), to: z.string() }).optional(), // only when it changed
+  title: z.object({ from: z.string(), to: z.string() }).optional(), // only when it changed
+  added: z.array(z.string()),
+  removed: z.array(z.string()),
+  changed: z.array(z.string()),
+  /** Entries left out of each list by the per-list limit. */
+  omitted: z
+    .object({ added: z.number().int(), removed: z.number().int(), changed: z.number().int() })
+    .optional(),
+  /** The page holds more elements than a snapshot does, so the diff covers its first part only. */
+  partial: z.boolean().optional(),
+});
+export type ScreenDiff = z.infer<typeof ScreenDiffSchema>;
+
 export const ActResultSchema = z.object({
   ok: z.boolean(),
   effects: ActEffectsSchema.optional(),
   resolution: AnchorResolutionSchema.optional(),
   error: z.string().optional(),
+  /**
+   * The saved-flow step that repeats this action: the action without its
+   * volatile ref, and the semantic anchor Argus resolved the target to. A fill
+   * into a password field carries a `${VAR}` placeholder, never the value.
+   * Present on success only.
+   */
+  step: z.lazy(() => FlowStepSchema).optional(),
+  /** Why `step` may not replay as it stands (no unique anchor, a placeholder to provide). */
+  stepNote: z.string().optional(),
+  /** What changed on screen since the previous observation. */
+  diff: ScreenDiffSchema.optional(),
 });
 export type ActResult = z.infer<typeof ActResultSchema>;
 
@@ -784,6 +834,47 @@ export const FlowStepSchema = z.object({
   label: z.string().optional(),
 });
 export type FlowStep = z.infer<typeof FlowStepSchema>;
+
+/** Ask a session for the steps it has accumulated, as a flow to save. */
+export const FlowDraftRequestSchema = z.object({
+  name: z
+    .string()
+    .regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/, "single safe path segment")
+    .optional(),
+  /** Answer the draft, then start over: drop the steps and re-base startUrl on the current page. */
+  reset: z.boolean().default(false),
+});
+export type FlowDraftRequest = z.infer<typeof FlowDraftRequestSchema>;
+
+/**
+ * A session's successful actions since the lease (or the last reset), as the
+ * arguments `argus_flow_save` takes. `success` is only what the final page can
+ * vouch for (its route, a clean console); `suggested` lists the consequences
+ * the session actually observed, for the agent to promote into `success` or a
+ * step's `expect`.
+ */
+export const FlowDraftSchema = z.object({
+  flow: z.object({
+    name: z.string(),
+    startUrl: z.string(),
+    viewport: ViewportNameSchema,
+    steps: z.array(FlowStepSchema),
+    success: z.array(PredicateSchema),
+  }),
+  /** False when there is nothing to save yet or a step has no unique anchor — see notes. */
+  ready: z.boolean(),
+  /** Consequences observed while driving (first-party writes), not yet asserted. */
+  suggested: z.array(PredicateSchema),
+  /** Environment variables the steps' `${VAR}` placeholders need at replay. */
+  placeholders: z.array(z.string()),
+  /** Steps not kept because the session passed the accumulation cap. */
+  dropped: z.number().int(),
+  notes: z.array(z.string()),
+});
+export type FlowDraft = z.infer<typeof FlowDraftSchema>;
+
+/** Steps one session accumulates for a draft; later ones are counted, not kept. */
+export const FLOW_DRAFT_MAX_STEPS = 200;
 
 export const FlowSchema = z.object({
   version: z.literal(1),
