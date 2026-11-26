@@ -67,7 +67,9 @@ Also write the project's standing rules into `AGENTS.md` (any AGENTS.md-reading 
 3. **Assert a consequence.** `argus_assert` with predicates — `network` (status + cardinality),
    `route`, `console-clean`, `stream`, `storage`, and (with the app's SDK) `signal`/`state`.
    Compose with `allOf`/`anyOf`. This is the verdict.
-4. **Save it.** `argus_record start` → drive → `argus_record stop` → `argus_flow_save` with per-step
+4. **Save it.** `argus_flow_draft` returns what you just drove as `argus_flow_save` arguments (every
+   `argus_act` result already carries its `step` and a screen `diff`); or bracket a journey with
+   `argus_record start` → drive → `argus_record stop`. Then `argus_flow_save` with per-step
    `expect` and a `success` oracle. Flows are stored **server-side for this tenant** — no files needed.
 5. **Re-verify forever.** `argus_flow_verify` replays every saved flow in parallel, deterministically,
    with no model in the loop. Run it after every change.

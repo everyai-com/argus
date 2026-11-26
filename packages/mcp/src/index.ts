@@ -97,15 +97,23 @@ Typical loop: argus_lease a URL (each parallel agent or flow holds its OWN sessi
 drive the app → argus_observe and argus_assert for network/console/route truth →
 argus_screenshot to see the page → argus_release when done.
 
-Save discovered journeys as deterministic flows: argus_record, then argus_flow_save
-with network/route success predicates. After any change, argus_flow_verify replays
+Every argus_act / argus_act_batch result carries the saved-flow step that repeats the
+action (step: the action plus the anchor Argus resolved — never a ref) and a screen diff
+(diff: elements added / removed / changed, URL and title changes since the previous
+observation), so you rarely need to re-query to see what an action did.
+
+Save discovered journeys as deterministic flows: argus_flow_draft returns the session's
+accumulated steps as argus_flow_save arguments (or bracket a journey with argus_record);
+add network/route success predicates, then argus_flow_save. After any change, argus_flow_verify replays
 the suite; argus_flow_heal rebinds drifted anchors.
 
 Rules: verdicts report the WEAKEST evidence tier they rest on
 (signal > consequence > dom > visual) — never upgrade a tier. Unresolvable or
 ambiguous anchors are errors, not guesses. A flow may contain \${VAR} placeholders
 resolved from the environment at call time; if a value is missing, ask the user
-rather than inventing or hard-coding a secret. Release every session when done.`;
+rather than inventing or hard-coding a secret. The value of a password field is never
+returned: a fill into one comes back as a \${VAR} placeholder step. Release every session
+when done.`;
 
 const server = new McpServer(
   { name: "argus", version: "0.1.0" },
@@ -205,7 +213,7 @@ registerTool(
 
 registerTool(
   "argus_act",
-  "Perform one action (goto/click/fill/select/press/hover/scroll/back/reload/wait) and get its OBSERVED effects: navigation, DOM delta, new console errors, new network failures. Target elements by ref (from argus_query) or semantic anchor.",
+  "Perform one action (goto/click/fill/select/press/hover/scroll/back/reload/wait) and get its OBSERVED effects: navigation, DOM delta, new console errors, new network failures. Target elements by ref (from argus_query) or semantic anchor. The result also carries `step` — the saved-flow step that repeats this action, with the semantic anchor Argus resolved (see `stepNote` when it cannot replay as it stands) — and `diff` — what changed on screen since the previous observation (added / removed / changed elements, URL and title; at most 12 lines per list, the rest counted in `omitted`). Password-field values are never returned.",
   { sessionId: z.string(), step: ActionSchema },
   async ({ sessionId, step }) =>
     jsonResult(await api("POST", `/v1/session/${sessionId}/act`, step))
@@ -213,7 +221,7 @@ registerTool(
 
 registerTool(
   "argus_act_batch",
-  "Perform up to 50 actions in one call (much faster than one-by-one). Executes in order; stops at the first failure unless stopOnError:false. Returns per-step effects.",
+  "Perform up to 50 actions in one call (much faster than one-by-one). Executes in order; stops at the first failure unless stopOnError:false. Returns per-step effects, each with its saved-flow `step` and a screen `diff` against the step before it (at most 6 lines per list in a batch).",
   {
     sessionId: z.string(),
     steps: z.array(ActionSchema).min(1).max(50),
@@ -511,6 +519,22 @@ registerTool(
         action === "start" ? { name } : {}
       )
     )
+);
+
+registerTool(
+  "argus_flow_draft",
+  "Return every successful action this session has performed since the lease (or the last reset) as a ready-to-save flow: `flow` holds argus_flow_save's arguments (name, startUrl, viewport, steps with semantic anchors, success). No argus_record needed. `success` only states what the final page vouches for (route, clean console); `suggested` lists the first-party writes the session observed — promote them into success or a step's expect. `ready:false` and `notes` say what to fix first (a step without a unique anchor). Password fills are `${VAR}` placeholders, listed in `placeholders`. reset:true answers the draft, then starts over from the current page.",
+  {
+    sessionId: z.string(),
+    name: z
+      .string()
+      .regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/)
+      .optional()
+      .describe("name for the flow (default: the session label)"),
+    reset: z.boolean().optional(),
+  },
+  async ({ sessionId, ...rest }) =>
+    jsonResult(await api("POST", `/v1/session/${sessionId}/flow-draft`, rest))
 );
 
 registerTool(

@@ -174,8 +174,30 @@ everyone else instead of a second `GEMINI.md`:
 Tools:
 `argus_lease/release/sessions`, `argus_query`, `argus_act`, `argus_act_batch`,
 `argus_observe`, `argus_assert`, `argus_screenshot`, `argus_smoke`,
-`argus_audit`, `argus_record`, `argus_flow_save/list/replay/verify/heal`,
+`argus_audit`, `argus_record`, `argus_flow_draft`, `argus_flow_save/list/replay/verify/heal`,
 `argus_flow_import_reticle`, `argus_runs`, `argus_findings`.
+
+**Every action answers with its step and a screen diff.** An `argus_act` /
+`argus_act_batch` result keeps `ok` / `effects` / `resolution` and adds:
+
+- `step` — the saved-flow step that repeats the action: the action without its
+  volatile ref, beside the semantic anchor Argus resolved the target to (a ref
+  is walked down the ladder testid → role+name → text → css and only an anchor
+  that resolves to exactly that element is used). `stepNote` says when a step
+  cannot replay as it stands.
+- `diff` — what changed on screen since the previous observation: `added`,
+  `removed`, `changed` (one line per element, e.g.
+  `p[testid=task-count]: text "2 task(s)" → "3 task(s)"`), plus `url` / `title`
+  when they changed. At most 12 lines per list (6 per step in a batch), 80
+  characters of text per element; the rest is counted in `omitted`, and a page
+  over 400 meaningful elements is marked `partial`.
+
+`argus_flow_draft` returns everything the session has done since the lease as
+`argus_flow_save` arguments — no `argus_record` bracket needed — with the
+first-party writes it observed listed as `suggested` success predicates.
+
+The value of a password field is never returned: observations and diffs show
+`[redacted]`, and a fill into one becomes a `${VAR}` placeholder step.
 
 The server also returns this lifecycle as `instructions` on initialize, so any
 client that surfaces it needs no instruction file at all. Harnesses that read

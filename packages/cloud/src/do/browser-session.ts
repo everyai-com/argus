@@ -19,12 +19,16 @@ import {
   type AnchorResolution,
   type ConsoleEvent,
   type FlowStep,
+  type ScreenDiff,
   type NetworkEvent,
   type PredicateResult,
   type StreamEvent,
   ActBatchRequestSchema,
   AssertRequestSchema,
   ActionSchema,
+  FlowDraftRequestSchema,
+  FLOW_DRAFT_MAX_STEPS,
+  SCREEN_DIFF_LIMITS,
   ObserveRequestSchema,
   QueryRequestSchema,
   ScreenshotRequestSchema,
@@ -34,6 +38,8 @@ import {
   type ViewportName,
 } from "@argus/shared";
 import { evalPredicate, resolveAnchor, weakestTier } from "../verify";
+import { collectSnapshot, diffSnapshots, type Snapshot } from "../screen-diff";
+import { buildFlowDraft, buildStep, describeTarget, scrub, type BuiltStep } from "../session-steps";
 import { hostOf, loadAuthProfile, saveAuthProfile } from "../auth-store";
 import { throttledLaunch } from "../pool";
 import type { Env } from "../env";
@@ -50,6 +56,29 @@ interface SessionMeta {
   createdAt: string;
   expiresAt: string;
   released: boolean;
+}
+
+/**
+ * Every successful action since the lease (or the last reset), in saved-flow
+ * form — what `/flow-draft` answers. One storage key per session DO.
+ */
+interface StepLog {
+  startUrl: string;
+  steps: FlowStep[];
+  /** Reasons a step cannot be saved as it is, each naming its step. */
+  blockers: string[];
+  /** Steps past FLOW_DRAFT_MAX_STEPS: counted, not kept. */
+  dropped: number;
+  /** Ring-buffer cursor when the log began, so a draft reads only its own events. */
+  sinceSeq: number;
+}
+
+/** What a resolved target contributes to its step. */
+interface StepTarget {
+  anchor?: Anchor;
+  matched?: number;
+  secure?: boolean;
+  hint?: string;
 }
 
 const json = (data: unknown, status = 200) =>
@@ -77,6 +106,10 @@ export class BrowserSession extends DurableObject<Env> {
   private streamBuf: StreamEvent[] = [];
   private pendingStarts = new Map<string, number>(); // request url+seq → start ts
 
+  // The previous observation of the page — what the next action's diff is
+  // measured against. In-memory: after an eviction the next action re-baselines.
+  private lastSnap?: Snapshot;
+
   async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
     try {
@@ -101,6 +134,8 @@ export class BrowserSession extends DurableObject<Env> {
           return await this.handleRecordStart(request);
         case "/record-stop":
           return await this.handleRecordStop();
+        case "/flow-draft":
+          return await this.handleFlowDraft(request);
         case "/release":
           return await this.handleRelease();
         case "/info":
@@ -157,9 +192,19 @@ export class BrowserSession extends DurableObject<Env> {
     await this.ctx.storage.put("meta", meta);
     await this.ctx.storage.setAlarm(now + body.ttlSeconds * 1000);
 
+    await this.ctx.storage.put("steps", {
+      startUrl: body.url,
+      steps: [],
+      blockers: [],
+      dropped: 0,
+      sinceSeq: 0,
+    } satisfies StepLog);
+
     const page = await this.ensurePage();
     await page.goto(body.url, { waitUntil: "domcontentloaded", timeout: 30_000 });
     await this.settle(page, 3_000);
+    // The first observation: the first action's diff is measured against it.
+    this.lastSnap = await this.snapshot(page);
 
     return json({
       sessionId: meta.sessionId,
@@ -272,6 +317,7 @@ export class BrowserSession extends DurableObject<Env> {
       ...(storageState ? { storageState: storageState as never } : {}),
     });
     this.page = await context.newPage();
+    this.lastSnap = undefined; // a new page has no previous observation
     this.bindListeners(this.page);
     return this.page;
   }
@@ -385,33 +431,73 @@ export class BrowserSession extends DurableObject<Env> {
 
   private async resolveTarget(
     page: Page,
-    ref?: string,
-    anchor?: Anchor
-  ): Promise<{ locator: Locator; resolution?: AnchorResolution; recAnchor?: Anchor }> {
+    ref: string | undefined,
+    anchor: Anchor | undefined,
+    /** Read the element itself (is it a password field?) even when an anchor names it. */
+    inspect = false
+  ): Promise<{ locator: Locator; resolution?: AnchorResolution; target: StepTarget }> {
     if (ref) {
       const locator = page.locator(`[data-argus-ref="${ref}"]`).first();
       if ((await locator.count()) === 0)
         throw new Error(
           `ref ${ref} no longer resolves (page changed?) — re-query to get fresh refs`
         );
-      // While recording, derive a durable anchor NOW — after the action the
-      // element (or the whole page) may be gone.
-      const recAnchor = (await this.isRecording())
-        ? await this.deriveAnchor(locator)
-        : undefined;
-      return { locator, recAnchor };
+      // Derive the durable anchor NOW — after the action the element (or the
+      // whole page) may be gone. A candidate only counts once it resolves, on
+      // the live page, to exactly this element: the step never carries a guess.
+      const info = await page.evaluate(describeTarget, ref).catch(() => undefined);
+      let ambiguous: { anchor: Anchor; matched: number } | undefined;
+      for (const candidate of info?.candidates ?? []) {
+        try {
+          // One call answers both questions: how many match, and is the match this element.
+          const refs = await resolveAnchor(page, candidate).locator.evaluateAll((els) =>
+            (els as unknown as any[]).map((el) => el.getAttribute("data-argus-ref"))
+          );
+          const matched = refs.length;
+          if (matched > 1) ambiguous ??= { anchor: candidate, matched };
+          if (matched !== 1 || refs[0] !== ref) continue;
+          return { locator, target: { anchor: candidate, matched, secure: info?.secure, hint: info?.hint } };
+        } catch {
+          /* an anchor the page cannot resolve is not a candidate */
+        }
+      }
+      return { locator, target: { ...ambiguous, secure: info?.secure, hint: info?.hint } };
     }
     if (anchor) {
       const { locator, via } = resolveAnchor(page, anchor);
-      const matched = await locator.count();
+      // Inspecting reads the match list once, which also counts it.
+      const info = inspect ? await locator.evaluateAll(describeTarget).catch(() => undefined) : undefined;
+      const matched = info?.matched ?? (await locator.count());
       if (matched === 0) throw new Error(`anchor_not_found via=${via}`);
-      return { locator: locator.first(), resolution: { via, matched }, recAnchor: anchor };
+      return {
+        locator: locator.first(),
+        resolution: { via, matched },
+        target: { anchor, matched, secure: info?.secure, hint: info?.hint },
+      };
     }
     throw new Error("action needs a ref or an anchor");
   }
 
-  private async isRecording(): Promise<boolean> {
-    return (await this.ctx.storage.get("recording")) !== undefined;
+  /** Observe the page as a snapshot; `undefined` when it cannot be read (mid-navigation). */
+  private async snapshot(page: Page): Promise<Snapshot | undefined> {
+    return await page
+      .evaluate(collectSnapshot, {
+        maxEls: SCREEN_DIFF_LIMITS.snapshotElements,
+        maxText: SCREEN_DIFF_LIMITS.text,
+      })
+      .catch(() => undefined);
+  }
+
+  /** Observe the page and diff it against the previous observation, which it then replaces. */
+  private async observeScreen(
+    page: Page,
+    perList: number
+  ): Promise<{ snap?: Snapshot; diff?: ScreenDiff }> {
+    const snap = await this.snapshot(page);
+    if (!snap) return {};
+    const diff = this.lastSnap ? diffSnapshots(this.lastSnap, snap, perList) : undefined;
+    this.lastSnap = snap;
+    return { snap, diff };
   }
 
   // -------------------------------------------------------------------------
@@ -459,6 +545,14 @@ export class BrowserSession extends DurableObject<Env> {
           ref = "e" + ++counter;
           el.setAttribute("data-argus-ref", ref);
         }
+        if (
+          el.tagName === "INPUT" &&
+          (String(el.getAttribute("type")).toLowerCase() === "password" ||
+            String(el.getAttribute("autocomplete") || "").toLowerCase().includes("password"))
+        ) {
+          el.__argusSecure = true; // sticky: survives a "show password" toggle
+        }
+        const secure = el.__argusSecure === true;
         out.push({
           ref,
           tag: el.tagName.toLowerCase(),
@@ -468,7 +562,8 @@ export class BrowserSession extends DurableObject<Env> {
             (el as HTMLInputElement).placeholder ??
             undefined,
           testid: el.getAttribute("data-testid") ?? undefined,
-          text: (el.innerText || (el as HTMLInputElement).value || "")
+          // What a password field holds is never returned, in any observation.
+          text: (el.innerText || (secure ? "" : (el as HTMLInputElement).value) || "")
             .trim()
             .slice(0, 80) || undefined,
           visible: true,
@@ -537,7 +632,8 @@ export class BrowserSession extends DurableObject<Env> {
     const results: ActResult[] = [];
     let completed = 0;
     for (const step of req.steps) {
-      const result = await this.performAction(step);
+      // Up to 50 diffs ride one response, so each is held to the tighter limit.
+      const result = await this.performAction(step, SCREEN_DIFF_LIMITS.perListBatch);
       results.push(result);
       if (result.ok) completed++;
       else if (req.stopOnError) break;
@@ -545,19 +641,36 @@ export class BrowserSession extends DurableObject<Env> {
     return json({ results, completed });
   }
 
-  private async performAction(action: Action): Promise<ActResult> {
+  private async performAction(
+    action: Action,
+    diffLimit: number = SCREEN_DIFF_LIMITS.perList
+  ): Promise<ActResult> {
     const page = await this.ensurePage();
 
-    // Snapshot "before" so effects are observed, not assumed.
+    // Snapshot "before" so effects are observed, not assumed. The screen diff
+    // is measured against the previous observation; only a session without one
+    // (a fresh DO instance) takes its baseline here.
     const urlBefore = page.url();
     const errSeqBefore = this.conBuf.filter((c) => c.level === "error").length;
     const failSeqBefore = this.netBuf.filter((n) => n.failed).length;
-    const nodesBefore = await page
-      .evaluate(() => document.querySelectorAll("*").length)
-      .catch(() => 0);
+    let nodesBefore: number;
+    if (!this.lastSnap) {
+      this.lastSnap = await this.snapshot(page);
+      nodesBefore = this.lastSnap?.nodes ?? 0;
+    } else {
+      nodesBefore = await page
+        .evaluate(() => document.querySelectorAll("*").length)
+        .catch(() => 0);
+    }
 
     let resolution: AnchorResolution | undefined;
-    let recAnchor: Anchor | undefined; // derived pre-action while recording
+    let target: StepTarget = {}; // resolved pre-action: anchor, and whether it is a password field
+    const aim = async (ref?: string, anchor?: Anchor, inspect = false) => {
+      const t = await this.resolveTarget(page, ref, anchor, inspect);
+      resolution = t.resolution;
+      target = t.target;
+      return t.locator;
+    };
     try {
       switch (action.action) {
         case "goto":
@@ -575,59 +688,47 @@ export class BrowserSession extends DurableObject<Env> {
         case "scroll":
           await page.mouse.wheel(0, action.direction === "down" ? action.amount : -action.amount);
           break;
-        case "click": {
-          const t = await this.resolveTarget(page, action.ref, action.anchor);
-          resolution = t.resolution;
-          recAnchor = t.recAnchor;
-          await t.locator.click({ timeout: 5_000 });
+        case "click":
+          await (await aim(action.ref, action.anchor)).click({ timeout: 5_000 });
           break;
-        }
-        case "fill": {
-          const t = await this.resolveTarget(page, action.ref, action.anchor);
-          resolution = t.resolution;
-          recAnchor = t.recAnchor;
-          await t.locator.fill(action.value, { timeout: 5_000 });
+        case "fill":
+          // inspect: a fill must know whether its field is a password field.
+          await (await aim(action.ref, action.anchor, true)).fill(action.value, { timeout: 5_000 });
           break;
-        }
-        case "select": {
-          const t = await this.resolveTarget(page, action.ref, action.anchor);
-          resolution = t.resolution;
-          recAnchor = t.recAnchor;
-          await t.locator.selectOption(action.value, { timeout: 5_000 });
+        case "select":
+          await (await aim(action.ref, action.anchor)).selectOption(action.value, { timeout: 5_000 });
           break;
-        }
-        case "press": {
+        case "press":
           if (action.ref || action.anchor) {
-            const t = await this.resolveTarget(page, action.ref, action.anchor);
-            resolution = t.resolution;
-            recAnchor = t.recAnchor;
-            await t.locator.press(action.key, { timeout: 5_000 });
+            await (await aim(action.ref, action.anchor)).press(action.key, { timeout: 5_000 });
           } else {
             await page.keyboard.press(action.key);
           }
           break;
-        }
-        case "hover": {
-          const t = await this.resolveTarget(page, action.ref, action.anchor);
-          resolution = t.resolution;
-          recAnchor = t.recAnchor;
-          await t.locator.hover({ timeout: 5_000 });
+        case "hover":
+          await (await aim(action.ref, action.anchor)).hover({ timeout: 5_000 });
           break;
-        }
       }
     } catch (err) {
-      return { ok: false, resolution, error: String(err).slice(0, 400) };
+      let error = String(err).slice(0, 400);
+      // Playwright's error quotes what it was typing; a password must not come back that way.
+      if (action.action === "fill" && target.secure) error = scrub(error, action.value);
+      const { diff } = await this.observeScreen(page, diffLimit);
+      return { ok: false, resolution, error, ...(diff ? { diff } : {}) };
     }
 
-    // Recording: persist the step with a durable semantic anchor (never a ref).
-    await this.maybeRecord(action, recAnchor);
+    // The step that repeats this action — semantic anchor, never a ref, never a secret.
+    const built = buildStep(action, target);
+    await this.logStep(built);
+    await this.maybeRecord(built.step);
 
     await this.settle(page);
 
     const urlAfter = page.url();
-    const nodesAfter = await page
-      .evaluate(() => document.querySelectorAll("*").length)
-      .catch(() => nodesBefore);
+    const { snap, diff } = await this.observeScreen(page, diffLimit);
+    const nodesAfter =
+      snap?.nodes ??
+      (await page.evaluate(() => document.querySelectorAll("*").length).catch(() => nodesBefore));
 
     return {
       ok: true,
@@ -642,6 +743,9 @@ export class BrowserSession extends DurableObject<Env> {
         newNetworkFailures:
           this.netBuf.filter((n) => n.failed).length - failSeqBefore,
       },
+      step: built.step,
+      ...(built.note ? { stepNote: built.note } : {}),
+      ...(diff ? { diff } : {}),
     };
   }
 
@@ -733,37 +837,79 @@ export class BrowserSession extends DurableObject<Env> {
     });
   }
 
-  /** Derive a durable semantic anchor from a live element (for recording). */
-  private async deriveAnchor(locator: Locator): Promise<Anchor | undefined> {
+  private async maybeRecord(step: FlowStep): Promise<void> {
+    const rec = await this.ctx.storage.get<{ name: string; steps: FlowStep[] }>("recording");
+    if (!rec) return;
+    rec.steps.push(step);
+    await this.ctx.storage.put("recording", rec);
+  }
+
+  // -------------------------------------------------------------------------
+  // Flow draft — every successful action accumulates, recording or not, so a
+  // driving session can be turned into a saved flow after the fact.
+  // -------------------------------------------------------------------------
+
+  private async loadStepLog(): Promise<StepLog> {
+    return (
+      (await this.ctx.storage.get<StepLog>("steps")) ?? {
+        startUrl: (await this.loadMeta())?.url ?? "",
+        steps: [],
+        blockers: [],
+        dropped: 0,
+        sinceSeq: 0,
+      }
+    );
+  }
+
+  /** Bookkeeping only: a storage hiccup here must never fail the action it follows. */
+  private async logStep(built: BuiltStep): Promise<void> {
     try {
-      return await locator.evaluate((el: HTMLElement) => {
-        const testid = el.getAttribute("data-testid");
-        if (testid) return { testid };
-        const role = el.getAttribute("role") ?? undefined;
-        const name = el.getAttribute("aria-label") ?? undefined;
-        if (role && name) return { role, name };
-        const text = (el.innerText ?? "").trim().slice(0, 60);
-        if (text) return { text };
-        return undefined;
-      });
+      const log = await this.loadStepLog();
+      if (log.steps.length >= FLOW_DRAFT_MAX_STEPS) {
+        log.dropped++;
+      } else {
+        if (built.blocking && built.note)
+          log.blockers.push(`step ${log.steps.length} (${built.step.action.action}): ${built.note}`);
+        log.steps.push(built.step);
+      }
+      await this.ctx.storage.put("steps", log);
     } catch {
-      return undefined;
+      /* the action itself succeeded */
     }
   }
 
-  private async maybeRecord(action: Action, anchor: Anchor | undefined): Promise<void> {
-    const rec = await this.ctx.storage.get<{ name: string; steps: FlowStep[] }>("recording");
-    if (!rec) return;
-    // Strip volatile refs — recorded steps carry semantic anchors only.
-    const cleanAction = { ...action } as Record<string, unknown>;
-    delete cleanAction.ref;
-    delete cleanAction.anchor;
-    rec.steps.push({
-      action: cleanAction as unknown as Action,
-      anchor,
-      expect: [],
+  private async handleFlowDraft(request: Request): Promise<Response> {
+    const raw = await request.text();
+    const req = FlowDraftRequestSchema.parse(raw.trim() ? JSON.parse(raw) : {});
+    const page = await this.ensurePage();
+    const meta = await this.loadMeta();
+    const log = await this.loadStepLog();
+
+    // An evicted DO restarts its ring buffers at 0; a cursor ahead of them means "everything".
+    const since = log.sinceSeq > this.seq ? 0 : log.sinceSeq;
+    const label = (meta?.label ?? "").replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^[-_]+|-+$/g, "");
+    const draft = buildFlowDraft({
+      name: req.name ?? (label || "session-flow"),
+      startUrl: log.startUrl,
+      viewport: meta?.viewport ?? "desktop",
+      steps: log.steps,
+      blockers: log.blockers,
+      dropped: log.dropped,
+      finalUrl: page.url(),
+      consoleErrors: this.conBuf.filter((c) => c.level === "error" && c.seq > since).length,
+      network: this.netBuf.filter((n) => n.seq > since),
     });
-    await this.ctx.storage.put("recording", rec);
+
+    if (req.reset) {
+      await this.ctx.storage.put("steps", {
+        startUrl: page.url(),
+        steps: [],
+        blockers: [],
+        dropped: 0,
+        sinceSeq: this.seq,
+      } satisfies StepLog);
+    }
+    return json(draft);
   }
 
   // -------------------------------------------------------------------------

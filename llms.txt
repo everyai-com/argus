@@ -46,7 +46,11 @@ Sessions: `argus_lease`, `argus_release`, `argus_sessions`, `argus_auth_save/lis
 Drive/read: `argus_query`, `argus_act`, `argus_act_batch`, `argus_observe`, `argus_assert`,
 `argus_screenshot`.
 Verify: `argus_smoke`, `argus_audit`, `argus_runs`, `argus_findings`.
-Flows: `argus_record`, `argus_flow_save/list/replay/verify/heal`, `argus_flow_import_reticle`.
+Flows: `argus_record`, `argus_flow_draft`, `argus_flow_save/list/replay/verify/heal`, `argus_flow_import_reticle`.
+Every `argus_act` / `argus_act_batch` result carries `step` (the saved-flow step that repeats the
+action, semantic anchor resolved) and `diff` (elements added / removed / changed, URL and title
+changes since the previous observation). `argus_flow_draft` returns the session's accumulated steps
+as `argus_flow_save` arguments. Password-field values are never returned.
 Discovery: `argus_tools` (the full surface, flagging which tools yield a verdict).
 Mail/magic links: `argus_email_link`.
 

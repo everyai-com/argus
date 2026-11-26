@@ -388,6 +388,7 @@ const SESSION_COMMANDS = new Set([
   "auth-save",
   "record-start",
   "record-stop",
+  "flow-draft",
   "info",
 ]);
 

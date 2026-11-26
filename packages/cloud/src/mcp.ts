@@ -86,8 +86,12 @@ Loop: argus_lease a URL (one session per concurrent agent) → argus_query → a
 argus_observe → argus_assert (network / route / console-clean / stream / storage / signal /
 state, composed with allOf/anyOf) → argus_screenshot → argus_release.
 
-Record a journey with argus_record, save it with argus_flow_save (it lives on the server for
-this tenant), and re-verify forever with argus_flow_verify. Only argus_assert and flow
+Every argus_act / argus_act_batch result carries \`step\` (the saved-flow step that repeats
+the action, with the anchor Argus resolved) and \`diff\` (elements added / removed / changed,
+URL and title changes since the previous observation). Password-field values are never returned.
+
+Turn a driven session into a flow with argus_flow_draft (or bracket a journey with
+argus_record), save it with argus_flow_save (it lives on the server for this tenant), and re-verify forever with argus_flow_verify. Only argus_assert and flow
 expect/success predicates produce a verdict — argus_act proves nothing. A verdict reports the
 WEAKEST evidence tier it rests on; never upgrade it. Release every session.`,
     }
@@ -146,7 +150,7 @@ WEAKEST evidence tier it rests on; never upgrade it. Release every session.`,
 
   tool(
     "argus_act",
-    "Perform one action (goto/click/fill/select/press/hover/scroll/back/reload/wait) and report the observed effects. Does NOT produce a verdict.",
+    "Perform one action (goto/click/fill/select/press/hover/scroll/back/reload/wait) and report the observed effects, the saved-flow `step` that repeats it (semantic anchor, never a ref) and a screen `diff` since the previous observation. Does NOT produce a verdict.",
     {
       sessionId: z.string(),
       step: ActionSchema.describe(
@@ -159,7 +163,7 @@ WEAKEST evidence tier it rests on; never upgrade it. Release every session.`,
 
   tool(
     "argus_act_batch",
-    "Run up to 50 ordered actions in one call; per-step effects, stops on the first failure by default.",
+    "Run up to 50 ordered actions in one call; per-step effects, `step` and screen `diff`; stops on the first failure by default.",
     {
       sessionId: z.string(),
       steps: z.array(ActionSchema).min(1).max(50),
@@ -270,6 +274,21 @@ WEAKEST evidence tier it rests on; never upgrade it. Release every session.`,
           body: JSON.stringify(action === "start" ? { name } : {}),
         })
       )
+  );
+
+  tool(
+    "argus_flow_draft",
+    "Return the session's successful actions since the lease (or the last reset) as a ready-to-save flow: `flow` holds argus_flow_save's arguments. `suggested` lists observed first-party writes to promote into success; `notes` say what to fix when `ready` is false. reset:true answers, then starts over from the current page.",
+    {
+      sessionId: z.string(),
+      name: z
+        .string()
+        .regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/)
+        .optional(),
+      reset: z.boolean().optional(),
+    },
+    async ({ sessionId, ...body }) =>
+      jsonResult(await call(`/v1/session/${sessionId}/flow-draft`, { method: "POST", body: JSON.stringify(body) }))
   );
 
   tool(
