@@ -7,7 +7,10 @@ Canonical agent file for this repo. Harnesses that read `AGENTS.md` natively
 sets `context.fileName` (what `argus init` writes).
 
 Cloud verification platform. Monorepo: `packages/shared` (zod wire contract —
-every cross-boundary schema lives here, both sides import it), `packages/cloud`
+every cross-boundary schema lives here, both sides import it), `packages/core`
+(anchor ladder, ambiguity refusal, predicates, audit signals — imported by the
+Worker AND the local runner), `packages/runner` (`argus run`: code-first tests on
+a local Chromium, see `docs/local-runner.md`), `packages/cloud`
 (CF Worker: Hono API + BrowserSession/Coordinator DOs + replay/audit engines +
 dashboard hosting), `packages/cli`, `packages/mcp`, `packages/dashboard`,
 `apps/demo` (dogfood app, `?bug=silent500|deadbutton|wrongstate|overflow|consoleerror|slowreq`).
@@ -20,6 +23,10 @@ dashboard hosting), `packages/cli`, `packages/mcp`, `packages/dashboard`,
 - live API: `https://argus-cloud.everyai-com.workers.dev` · token in `.argus/config.json` (gitignored)
 - demo: `pnpm --filter @argus/demo build && (cd apps/demo && pnpm preview)` (port 5199 is in vite.config; bare `vite` is not on PATH)
 - demo worker (live dogfood target): https://argus-demo.everyai-com.workers.dev · deploy with `pnpm --filter @argus/demo deploy` (builds + ships `worker.ts` + `./dist`); API logic is shared in `apps/demo/shared/api.ts` so preview and prod can't drift
+- local tests (no cloud, no token; Node ≥ 22.18): `pnpm test:local` runs every suite — the runner's own
+  (`packages/runner/tests`, incl. negative controls), the demo's (`apps/demo/tests` + the `?bug=` matrix) and the
+  console's on the real Worker under `wrangler dev --local` (`packages/cloud/tests`). One package:
+  `pnpm --filter @argus/demo test:local`. `pnpm test` = unit tests, then these. First run downloads Chromium (~110 MB)
 - tunnel for local testing: `argus tunnel 5199` (or `node packages/cli/dist/index.js ...`)
 - wire a project to Argus (MCP + verification steps): `argus init <api-url> <token> [--harness all]`
 - fleet ops: `argus capacity [--watch]` (live gauges) · `argus stress <N>` (load) ·
@@ -32,8 +39,25 @@ dashboard hosting), `packages/cli`, `packages/mcp`, `packages/dashboard`,
 - Evidence tiers: verdicts report the WEAKEST tier they rest on
   (signal > consequence > dom > visual). Never upgrade a tier.
 - Verify-or-refuse: unresolvable/ambiguous anchors are errors, never guesses.
-- Flows carry semantic anchors only (testid → role+name → text → css) — never
-  volatile `eN` refs.
+- Flows carry semantic anchors only (testid → role+name → label → placeholder →
+  text → css) — never volatile `eN` refs.
+- One anchor model: the ladder, the ambiguity refusal and predicate evaluation
+  live in `packages/core`, typed structurally (`src/page.ts`) so the Worker's
+  `@cloudflare/playwright` and the runner's `playwright-core` run the same code.
+  Never re-implement resolution in either caller, and never import a browser
+  driver, Node or Workers API into `packages/core`.
+- Local runner (`packages/runner`): a test file reaches the browser only through
+  the `Driver` interface, as wire-contract data (`Action`+`Anchor`, `Predicate`) —
+  no Playwright object may leak into `api.ts`/`expect.ts`; that seam is what lets
+  the same file run on the fleet later. Acting on / reading one element needs
+  exactly one match (no `.first()`/`.nth()`). Never return the value of a secure
+  field (password, one-time-code, card data) or echo a filled value in an error.
+  The audit gates (console error, horizontal overflow) default ON. `packages/core`
+  and `packages/runner` are loaded by Node's native type stripping: erasable
+  syntax only, `import type` for types, `.ts` on relative imports.
+- Negative controls must stay red: `packages/runner/tests/negative` (every test
+  fails with the verdict in its title) and `apps/demo/tests/bug-matrix.mjs` (all 6
+  `?bug=` variants fail the demo suite). A change that turns one green is a bug.
 - Coordinator DO: parse request bodies BEFORE storage ops; per-session storage
   keys; cap check inside `blockConcurrencyWhile` (lost-update history here).
 - Multi-tenant fairness: `Σ reserved ≤ ARGUS_MAX_SESSIONS` is enforced at tenant

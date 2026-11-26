@@ -1,6 +1,7 @@
 /**
  * argus CLI — "just apply it" from any project.
  *
+ *   argus run [files]         run code-first tests on a local Chromium
  *   argus test <url>          run the cloud smoke suite against a URL
  *   argus sessions            list active cloud browser sessions
  *   argus config              show resolved config
@@ -12,6 +13,7 @@ import { readFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 
 import { join, dirname, basename, relative } from "node:path";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import process from "node:process";
+import { runLocal } from "./run-local";
 import type { SmokeReport } from "@argus/shared";
 import { buildCfSaasFlows, probeApp } from "./preset";
 import { wireHarnesses, mcpServerPath, parseInitArgs } from "./harness";
@@ -239,6 +241,11 @@ async function runLiveChecks(
 
 async function main(): Promise<void> {
   const [, , command, ...args] = process.argv;
+
+  // argus run [files] — code-first tests on a local Chromium. Before config
+  // resolution on purpose: a local run needs no API URL and no token.
+  if (command === "run") process.exit(await runLocal(args, process.cwd()));
+
   const cfg = loadConfig();
 
   switch (command) {
@@ -1091,6 +1098,8 @@ usage:
   argus verify <url>           automatically run smoke + audit + every saved flow
   argus verify <url> --json    same, as machine-readable JSON (run ids + full reports)
   argus doctor [--target …]    one command: config, API, auth, fleet, runs, flows, gates
+  argus run [files]            run *.argus.ts tests on a local Chromium — starts and stops
+                               your app itself; no cloud, no tunnel, no token
   argus test <url>             run the smoke suite against a URL
   argus test --local <port>    tunnel a local app to the cloud and test it
   argus audit <url>            full audit: a11y, perf, links, visual regression

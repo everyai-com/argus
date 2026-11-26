@@ -1,0 +1,32 @@
+{
+  "name": "@argus/runner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Argus local runner \u2014 code-first tests on a local Chromium: no cloud, no tunnel, no token. `argus run` starts the app under test, runs the tests, stops the app.",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./cli": "./src/cli.ts"
+  },
+  "bin": {
+    "argus-run": "./bin/argus-run.mjs"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test:local": "cd tests && node ../bin/argus-run.mjs --install-browser && node check-negative.mjs"
+  },
+  "dependencies": {
+    "@argus/core": "workspace:*",
+    "@argus/shared": "workspace:*",
+    "playwright-core": "^1.65.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "typescript": "^7.0.2"
+  }
+}

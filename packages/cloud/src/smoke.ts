@@ -13,6 +13,7 @@ import {
   type SmokeRequest,
 } from "@argus/shared";
 import { writeRunMeta } from "./runs";
+import { readHorizontalOverflow } from "@argus/core";
 import type { Env } from "./env";
 
 export async function runSmoke(env: Env, req: SmokeRequest, tenantId?: string): Promise<SmokeReport> {
@@ -73,10 +74,8 @@ export async function runSmoke(env: Env, req: SmokeRequest, tenantId?: string): 
         }
 
         // Responsive overflow: horizontal scroll on a fresh load is a layout bug.
-        const overflow = await page
-          .evaluate(
-            () => document.documentElement.scrollWidth > window.innerWidth + 1
-          )
+        const overflow = await readHorizontalOverflow(page)
+          .then((r) => r.overflow)
           .catch(() => false);
         if (overflow && !overflowViewports.includes(viewport)) {
           overflowViewports.push(viewport);

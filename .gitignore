@@ -9,3 +9,4 @@ coverage/
 .argus/config.json
 .commandcode/
 reticle/
+**/.argus/runs/

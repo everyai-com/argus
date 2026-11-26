@@ -23,6 +23,7 @@ or anything that speaks MCP (no API key anywhere).
 | **Smoke** | loads · console clean · network clean · responsive, at 3 viewports, screenshots | deterministic, no model |
 | **Flows** | record once → deterministic cloud replay with semantic anchors (testid → role → text → css), drift detection, nearest-match self-heal, decision envelopes | deterministic, no model |
 | **Audit** | axe-core WCAG A/AA · FCP/LCP/CLS · broken links · horizontal overflow · pixel-diff visual regression vs baselines | deterministic, no model |
+| **Local tests** | `argus run` — tests as TypeScript on a Chromium on your machine; starts and stops your app; the same anchors and predicates as flows, plus console-error and overflow gates on every test. See [docs/local-runner.md](docs/local-runner.md) | deterministic, no model, no token |
 | **Exploration** | your coding agent maps the app, drives journeys in parallel subagents, saves new flows, judges screenshots | your coding agent's own subscription |
 
 Evidence is **tiered** (app signal > network/route consequence > DOM presence)
@@ -273,8 +274,10 @@ measured ~2× faster than sequential at 3 flows, scaling with the session cap.
 
 ```
 packages/shared     zod wire contract — every schema crossing a boundary
+packages/core       anchor ladder, ambiguity refusal, predicates, audit signals — one copy for cloud and local
 packages/cloud      CF Worker: API, DOs, replay engine, audits, dashboard hosting
-packages/cli        argus init/test/audit/tunnel/sessions/config
+packages/runner     local code-first test runner (`argus run`) on playwright-core
+packages/cli        argus init/run/test/audit/tunnel/sessions/config
 packages/mcp        MCP server (any MCP client)
 packages/dashboard  React dashboard (builds into cloud/public)
 apps/demo           dogfood app with injectable bug switchboard (?bug=…)

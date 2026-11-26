@@ -36,8 +36,9 @@ export type EvidenceTier = z.infer<typeof EvidenceTierSchema>;
 
 // ---------------------------------------------------------------------------
 // Anchors — semantic element addressing with a resolution ladder
-// (testid → role+name → text → css). Verify-or-refuse: a step that cannot
-// verify its outcome fails loudly, it never "probably worked".
+// (testid → role+name → label → placeholder → text → css). Verify-or-refuse:
+// a step that cannot verify its outcome fails loudly, it never "probably
+// worked". The ladder itself is implemented once, in @argus/core.
 // ---------------------------------------------------------------------------
 
 export const AnchorSchema = z
@@ -45,17 +46,21 @@ export const AnchorSchema = z
     testid: z.string().optional(),
     role: z.string().optional(),
     name: z.string().optional(), // accessible name, used with role
+    /** A form control by its label — the only semantic handle on a password
+     * field, which has no ARIA role for role+name to match. */
+    label: z.string().optional(),
+    placeholder: z.string().optional(), // a form control by its placeholder
     text: z.string().optional(), // visible text content
     css: z.string().optional(), // last-resort structural selector
   })
-  .refine((a) => a.testid || a.role || a.text || a.css, {
-    message: "anchor needs at least one of testid/role/text/css",
+  .refine((a) => a.testid || a.role || a.label || a.placeholder || a.text || a.css, {
+    message: "anchor needs at least one of testid/role/label/placeholder/text/css",
   });
 export type Anchor = z.infer<typeof AnchorSchema>;
 
 /** How an anchor actually resolved — recorded so drift is explainable. */
 export const AnchorResolutionSchema = z.object({
-  via: z.enum(["testid", "role", "text", "css"]),
+  via: z.enum(["testid", "role", "label", "placeholder", "text", "css"]),
   matched: z.number().int(), // how many elements matched (1 is healthy)
 });
 export type AnchorResolution = z.infer<typeof AnchorResolutionSchema>;
